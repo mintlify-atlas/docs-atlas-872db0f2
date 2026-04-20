@@ -1,0 +1,468 @@
+---
+title: "aws.elasticache — Redis and Memcached clusters"
+description: "Reference for the aws.elasticache module: create Redis or Memcached clusters, configure replication groups, and manage subnet groups."
+---
+
+The `aws.elasticache` module manages Amazon ElastiCache caching infrastructure: Memcached clusters, single-node Redis instances, and Redis replication groups with Multi-AZ support. In v7 the `engine` field must be entirely lowercase for `Cluster`, `ReplicationGroup`, `User`, and `UserGroup`.
+
+<Warning>
+**v7 breaking changes for ElastiCache resources**
+
+- The `engine` value must be **entirely lowercase** (`redis`, `memcached`). Uppercase values (e.g., `Redis`) were silently accepted in v6 but now cause a plan-time validation error.
+- `aws.elasticache.ReplicationGroup`: `authTokenUpdateStrategy` no longer has a default value. If you set `authToken`, you must also explicitly set `authTokenUpdateStrategy`.
+</Warning>
+
+## aws.elasticache.Cluster
+
+Manages a Memcached cluster or a single-node Redis instance. For Redis with Multi-AZ or Cluster Mode, use `aws.elasticache.ReplicationGroup` instead.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Memcached cluster
+const memcached = new aws.elasticache.Cluster("memcached", {
+    clusterId: "my-memcached",
+    engine: "memcached",   // must be lowercase in v7
+    nodeType: "cache.t3.medium",
+    numCacheNodes: 2,
+    parameterGroupName: "default.memcached1.6",
+    port: 11211,
+    subnetGroupName: cacheSubnetGroup.name,
+    securityGroupIds: [cacheSg.id],
+});
+
+// Single-node Redis instance
+const redis = new aws.elasticache.Cluster("redis", {
+    clusterId: "my-redis",
+    engine: "redis",       // must be lowercase in v7
+    engineVersion: "7.0",
+    nodeType: "cache.t3.medium",
+    numCacheNodes: 1,
+    parameterGroupName: "default.redis7",
+    port: 6379,
+    subnetGroupName: cacheSubnetGroup.name,
+    securityGroupIds: [cacheSg.id],
+});
+
+export const redisEndpoint = redis.cacheNodes;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+# Memcached cluster
+memcached = aws.elasticache.Cluster("memcached",
+    cluster_id="my-memcached",
+    engine="memcached",    # must be lowercase in v7
+    node_type="cache.t3.medium",
+    num_cache_nodes=2,
+    parameter_group_name="default.memcached1.6",
+    port=11211,
+    subnet_group_name=cache_subnet_group.name,
+    security_group_ids=[cache_sg.id],
+)
+
+# Single-node Redis instance
+redis = aws.elasticache.Cluster("redis",
+    cluster_id="my-redis",
+    engine="redis",        # must be lowercase in v7
+    engine_version="7.0",
+    node_type="cache.t3.medium",
+    num_cache_nodes=1,
+    parameter_group_name="default.redis7",
+    port=6379,
+    subnet_group_name=cache_subnet_group.name,
+    security_group_ids=[cache_sg.id],
+)
+```
+
+</CodeGroup>
+
+### Key inputs
+
+<ParamField path="clusterId" type="string" required>
+  Unique identifier for the cluster. Must be between 1–50 alphanumeric characters and hyphens.
+</ParamField>
+
+<ParamField path="engine" type="string">
+  Cache engine. Must be `redis` or `memcached` (entirely lowercase in v7). Required unless `replicationGroupId` is set.
+</ParamField>
+
+<ParamField path="engineVersion" type="string">
+  Engine version. Leave unset to use the AWS default for the selected engine.
+</ParamField>
+
+<ParamField path="nodeType" type="string">
+  EC2 instance type for cache nodes (e.g., `cache.t3.medium`, `cache.r7g.large`).
+</ParamField>
+
+<ParamField path="numCacheNodes" type="number">
+  Number of cache nodes. Must be 1 for Redis (single-node). Defaults to 1.
+</ParamField>
+
+<ParamField path="parameterGroupName" type="string">
+  Name of the parameter group to associate with the cluster.
+</ParamField>
+
+<ParamField path="subnetGroupName" type="string">
+  Name of the subnet group. Required for clusters inside a VPC.
+</ParamField>
+
+<ParamField path="securityGroupIds" type="string[]">
+  List of VPC security group IDs to associate with the cluster.
+</ParamField>
+
+<ParamField path="port" type="number">
+  Port number. Defaults to 6379 for Redis, 11211 for Memcached.
+</ParamField>
+
+### Key outputs
+
+| Attribute | Description |
+|---|---|
+| `arn` | ARN of the ElastiCache cluster. |
+| `cacheNodes` | List of node objects with `address`, `port`, and `availabilityZone`. |
+| `clusterAddress` | Memcached only — DNS name for the cluster. |
+| `configurationEndpoint` | Memcached only — configuration endpoint `address:port`. |
+
+---
+
+## aws.elasticache.ReplicationGroup
+
+Manages a Redis replication group — the resource to use for Redis with Multi-AZ, automatic failover, or Cluster Mode Enabled.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const redisReplGroup = new aws.elasticache.ReplicationGroup("redis-rg", {
+    replicationGroupId: "my-redis-rg",
+    description: "Production Redis replication group",
+    nodeType: "cache.r7g.large",
+    numCacheClusters: 2,                // 1 primary + 1 replica
+    automaticFailoverEnabled: true,
+    multiAzEnabled: true,
+    engineVersion: "7.0",
+    parameterGroupName: "default.redis7",
+    port: 6379,
+    subnetGroupName: cacheSubnetGroup.name,
+    securityGroupIds: [cacheSg.id],
+    atRestEncryptionEnabled: true,
+    transitEncryptionEnabled: true,
+    // authToken and authTokenUpdateStrategy must both be set in v7
+    authToken: pulumi.secret("my-auth-token"),
+    authTokenUpdateStrategy: "ROTATE",
+    tags: { Environment: "production" },
+});
+
+export const primaryEndpoint = redisReplGroup.primaryEndpoint;
+export const readerEndpoint = redisReplGroup.readerEndpointAddress;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+redis_rg = aws.elasticache.ReplicationGroup("redis-rg",
+    replication_group_id="my-redis-rg",
+    description="Production Redis replication group",
+    node_type="cache.r7g.large",
+    num_cache_clusters=2,               # 1 primary + 1 replica
+    automatic_failover_enabled=True,
+    multi_az_enabled=True,
+    engine_version="7.0",
+    parameter_group_name="default.redis7",
+    port=6379,
+    subnet_group_name=cache_subnet_group.name,
+    security_group_ids=[cache_sg.id],
+    at_rest_encryption_enabled=True,
+    transit_encryption_enabled=True,
+    # authToken and authTokenUpdateStrategy must both be set in v7
+    auth_token=pulumi.Output.secret("my-auth-token"),
+    auth_token_update_strategy="ROTATE",
+    tags={"Environment": "production"},
+)
+
+pulumi.export("primary_endpoint", redis_rg.primary_endpoint)
+pulumi.export("reader_endpoint", redis_rg.reader_endpoint_address)
+```
+
+</CodeGroup>
+
+### Key inputs
+
+<ParamField path="replicationGroupId" type="string" required>
+  Unique ID for the replication group. 1–40 alphanumeric characters and hyphens.
+</ParamField>
+
+<ParamField path="description" type="string" required>
+  User-supplied description for the replication group.
+</ParamField>
+
+<ParamField path="nodeType" type="string">
+  EC2 instance type for each cache node (e.g., `cache.r7g.large`).
+</ParamField>
+
+<ParamField path="numCacheClusters" type="number">
+  Total number of cache clusters (primary + replicas). Use this for simple single-shard replication groups.
+</ParamField>
+
+<ParamField path="numNodeGroups" type="number">
+  Number of shards (node groups) for Cluster Mode Enabled. Conflicts with `numCacheClusters`.
+</ParamField>
+
+<ParamField path="replicasPerNodeGroup" type="number">
+  Number of replica nodes per shard. Used with `numNodeGroups` for Cluster Mode Enabled.
+</ParamField>
+
+<ParamField path="automaticFailoverEnabled" type="boolean">
+  Promote a read replica to primary automatically on failure. Requires at least 2 cache clusters.
+</ParamField>
+
+<ParamField path="multiAzEnabled" type="boolean">
+  Enable Multi-AZ. Requires `automaticFailoverEnabled` to also be `true`.
+</ParamField>
+
+<ParamField path="authToken" type="string">
+  Auth token (password) for Redis AUTH. Must also set `authTokenUpdateStrategy` in v7.
+</ParamField>
+
+<ParamField path="authTokenUpdateStrategy" type="string">
+  How to update the auth token. One of `SET`, `ROTATE`, or `DELETE`. **No longer has a default value in v7** — must be set explicitly when `authToken` is provided.
+</ParamField>
+
+<ParamField path="atRestEncryptionEnabled" type="boolean">
+  Encrypt data at rest. Defaults to `false`.
+</ParamField>
+
+<ParamField path="transitEncryptionEnabled" type="boolean">
+  Encrypt data in transit (TLS). Required when `authToken` is set.
+</ParamField>
+
+### Key outputs
+
+| Attribute | Description |
+|---|---|
+| `arn` | ARN of the replication group. |
+| `primaryEndpoint` | Primary node endpoint `address:port`. |
+| `readerEndpointAddress` | Reader endpoint address (load-balanced across replicas). |
+| `configurationEndpointAddress` | Cluster Mode Enabled configuration endpoint address. |
+
+---
+
+## aws.elasticache.SubnetGroup
+
+A subnet group specifies the VPC subnets in which ElastiCache nodes are placed.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const cacheSubnetGroup = new aws.elasticache.SubnetGroup("cache-subnets", {
+    name: "my-cache-subnet-group",
+    subnetIds: [privateSubnetA.id, privateSubnetB.id],
+    tags: { Name: "My cache subnet group" },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+cache_subnet_group = aws.elasticache.SubnetGroup("cache-subnets",
+    name="my-cache-subnet-group",
+    subnet_ids=[private_subnet_a.id, private_subnet_b.id],
+    tags={"Name": "My cache subnet group"},
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.elasticache.ParameterGroup
+
+Customize engine parameters for your cluster or replication group.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const redisParams = new aws.elasticache.ParameterGroup("redis-params", {
+    name: "my-redis-params",
+    family: "redis7",
+    parameters: [
+        { name: "maxmemory-policy", value: "allkeys-lru" },
+        { name: "activerehashing", value: "yes" },
+    ],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+redis_params = aws.elasticache.ParameterGroup("redis-params",
+    name="my-redis-params",
+    family="redis7",
+    parameters=[
+        aws.elasticache.ParameterGroupParameterArgs(name="maxmemory-policy", value="allkeys-lru"),
+        aws.elasticache.ParameterGroupParameterArgs(name="activerehashing", value="yes"),
+    ],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.elasticache.User and aws.elasticache.UserGroup
+
+Manage Redis users and user groups for role-based access control (RBAC) with ElastiCache for Redis 6.0+.
+
+<Warning>
+The `engine` value for `User` and `UserGroup` must also be entirely lowercase (`redis`) in v7. Uppercase values cause a validation error.
+</Warning>
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const appUser = new aws.elasticache.User("app-user", {
+    userId: "app-user",
+    userName: "appuser",
+    engine: "redis",           // must be lowercase in v7
+    passwords: [pulumi.secret("my-secret-password")],
+    accessString: "on ~* &* +@all",
+});
+
+const appGroup = new aws.elasticache.UserGroup("app-group", {
+    engine: "redis",           // must be lowercase in v7
+    userGroupId: "app-user-group",
+    userIds: [appUser.userId],
+});
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+app_user = aws.elasticache.User("app-user",
+    user_id="app-user",
+    user_name="appuser",
+    engine="redis",            # must be lowercase in v7
+    passwords=[pulumi.Output.secret("my-secret-password")],
+    access_string="on ~* &* +@all",
+)
+
+app_group = aws.elasticache.UserGroup("app-group",
+    engine="redis",            # must be lowercase in v7
+    user_group_id="app-user-group",
+    user_ids=[app_user.user_id],
+)
+```
+
+</CodeGroup>
+
+<Tip>
+Associate a `UserGroup` with a `ReplicationGroup` by setting the `userGroupIds` argument on the replication group resource.
+</Tip>
+
+---
+
+## Complete example: Redis replication group in a VPC
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.Vpc("cache-vpc", { cidrBlock: "10.0.0.0/16" });
+
+const subnetA = new aws.ec2.Subnet("cache-subnet-a", {
+    vpcId: vpc.id, cidrBlock: "10.0.1.0/24", availabilityZone: "us-east-1a",
+});
+const subnetB = new aws.ec2.Subnet("cache-subnet-b", {
+    vpcId: vpc.id, cidrBlock: "10.0.2.0/24", availabilityZone: "us-east-1b",
+});
+
+const cacheSg = new aws.ec2.SecurityGroup("cache-sg", {
+    vpcId: vpc.id,
+    ingress: [{ protocol: "tcp", fromPort: 6379, toPort: 6379, cidrBlocks: ["10.0.0.0/16"] }],
+    egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
+});
+
+const cacheSubnetGroup = new aws.elasticache.SubnetGroup("cache-subnets", {
+    subnetIds: [subnetA.id, subnetB.id],
+});
+
+const redis = new aws.elasticache.ReplicationGroup("redis", {
+    replicationGroupId: "my-app-redis",
+    description: "Application Redis cluster",
+    nodeType: "cache.t3.medium",
+    numCacheClusters: 2,
+    automaticFailoverEnabled: true,
+    multiAzEnabled: true,
+    engineVersion: "7.0",
+    parameterGroupName: "default.redis7",
+    subnetGroupName: cacheSubnetGroup.name,
+    securityGroupIds: [cacheSg.id],
+    atRestEncryptionEnabled: true,
+    transitEncryptionEnabled: true,
+});
+
+export const primaryEndpoint = redis.primaryEndpoint;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+vpc = aws.ec2.Vpc("cache-vpc", cidr_block="10.0.0.0/16")
+
+subnet_a = aws.ec2.Subnet("cache-subnet-a",
+    vpc_id=vpc.id, cidr_block="10.0.1.0/24", availability_zone="us-east-1a")
+subnet_b = aws.ec2.Subnet("cache-subnet-b",
+    vpc_id=vpc.id, cidr_block="10.0.2.0/24", availability_zone="us-east-1b")
+
+cache_sg = aws.ec2.SecurityGroup("cache-sg",
+    vpc_id=vpc.id,
+    ingress=[aws.ec2.SecurityGroupIngressArgs(
+        protocol="tcp", from_port=6379, to_port=6379, cidr_blocks=["10.0.0.0/16"]
+    )],
+    egress=[aws.ec2.SecurityGroupEgressArgs(
+        protocol="-1", from_port=0, to_port=0, cidr_blocks=["0.0.0.0/0"]
+    )],
+)
+
+cache_subnet_group = aws.elasticache.SubnetGroup("cache-subnets",
+    subnet_ids=[subnet_a.id, subnet_b.id],
+)
+
+redis = aws.elasticache.ReplicationGroup("redis",
+    replication_group_id="my-app-redis",
+    description="Application Redis cluster",
+    node_type="cache.t3.medium",
+    num_cache_clusters=2,
+    automatic_failover_enabled=True,
+    multi_az_enabled=True,
+    engine_version="7.0",
+    parameter_group_name="default.redis7",
+    subnet_group_name=cache_subnet_group.name,
+    security_group_ids=[cache_sg.id],
+    at_rest_encryption_enabled=True,
+    transit_encryption_enabled=True,
+)
+
+pulumi.export("primary_endpoint", redis.primary_endpoint)
+```
+
+</CodeGroup>

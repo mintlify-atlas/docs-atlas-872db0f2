@@ -1,0 +1,492 @@
+---
+title: "aws.cloudwatch — metrics, alarms, dashboards, and logs"
+description: "Reference for the aws.cloudwatch module: create metric alarms, log groups, log streams, dashboards, event rules, and composite alarms."
+---
+
+The `aws.cloudwatch` module provides resources for Amazon CloudWatch metrics, alarms, dashboards, log groups, log metric filters, and EventBridge (formerly CloudWatch Events) rules and targets. Together these resources enable you to monitor infrastructure, react to operational events, and centralize log management.
+
+## aws.cloudwatch.LogGroup
+
+`aws.cloudwatch.LogGroup` creates a CloudWatch Logs log group that stores log data from Lambda functions, EC2 instances, API Gateway stages, and other AWS services.
+
+<ParamField path="name" type="string">
+  Name of the log group. If omitted, a random unique name is assigned. Conflicts with `namePrefix`.
+</ParamField>
+
+<ParamField path="retentionInDays" type="number">
+  Number of days to retain log events. Supported values: 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653, and 0 (never expire).
+</ParamField>
+
+<ParamField path="kmsKeyId" type="string">
+  ARN of a KMS key for encrypting log data at rest.
+</ParamField>
+
+<ParamField path="logGroupClass" type="string">
+  Log class. Valid values: `STANDARD` (default), `INFREQUENT_ACCESS`, `DELIVERY`.
+</ParamField>
+
+<ParamField path="skipDestroy" type="boolean">
+  When `true`, the log group is removed from state on destroy but not deleted from AWS. Useful for preserving historical logs.
+</ParamField>
+
+<ParamField path="deletionProtectionEnabled" type="boolean">
+  Prevents accidental deletion. Defaults to `false`.
+</ParamField>
+
+<ParamField path="tags" type="map">
+  Key-value map of resource tags.
+</ParamField>
+
+**Outputs**: `arn`
+
+## aws.cloudwatch.MetricAlarm
+
+`aws.cloudwatch.MetricAlarm` creates an alarm that fires when a metric crosses a threshold.
+
+<ParamField path="name" type="string">
+  Unique alarm name within the AWS account.
+</ParamField>
+
+<ParamField path="comparisonOperator" type="string" required>
+  Comparison to apply. Valid values: `GreaterThanOrEqualToThreshold`, `GreaterThanThreshold`, `LessThanThreshold`, `LessThanOrEqualToThreshold`. Anomaly detection alarms also support `LessThanLowerOrGreaterThanUpperThreshold`, `LessThanLowerThreshold`, and `GreaterThanUpperThreshold`.
+</ParamField>
+
+<ParamField path="evaluationPeriods" type="number" required>
+  Number of periods over which data is compared to the threshold.
+</ParamField>
+
+<ParamField path="metricName" type="string">
+  Metric name (e.g., `CPUUtilization`). Mutually exclusive with `metricQueries`.
+</ParamField>
+
+<ParamField path="namespace" type="string">
+  Metric namespace (e.g., `AWS/EC2`, `AWS/Lambda`). Required when `metricName` is set.
+</ParamField>
+
+<ParamField path="period" type="number">
+  Evaluation period in seconds. Valid values: `10`, `20`, `30`, or any multiple of `60`. Required when `metricName` is set.
+</ParamField>
+
+<ParamField path="statistic" type="string">
+  Statistic to apply. Valid values: `SampleCount`, `Average`, `Sum`, `Minimum`, `Maximum`. Mutually exclusive with `extendedStatistic`.
+</ParamField>
+
+<ParamField path="threshold" type="number">
+  Value to compare the statistic against. Required for static threshold alarms.
+</ParamField>
+
+<ParamField path="alarmActions" type="array">
+  ARNs to invoke when the alarm transitions to ALARM state. Supports SNS topic ARNs, Auto Scaling policy ARNs, and Systems Manager OpsItem ARNs.
+</ParamField>
+
+<ParamField path="okActions" type="array">
+  ARNs to invoke when the alarm transitions to OK state.
+</ParamField>
+
+<ParamField path="insufficientDataActions" type="array">
+  ARNs to invoke when the alarm transitions to INSUFFICIENT_DATA state.
+</ParamField>
+
+<ParamField path="alarmDescription" type="string">
+  Human-readable description of the alarm.
+</ParamField>
+
+<ParamField path="dimensions" type="map">
+  Key-value map of metric dimensions (e.g., `{ InstanceId: "i-1234567890abcdef0" }`).
+</ParamField>
+
+<ParamField path="metricQueries" type="array">
+  Up to 20 metric queries for math expression alarms. When `metricQueries` is used, `metricName`, `namespace`, `period`, and `statistic` must not be set.
+</ParamField>
+
+<ParamField path="treatMissingData" type="string">
+  Behavior when data points are missing. Valid values: `missing` (default), `ignore`, `breaching`, `notBreaching`.
+</ParamField>
+
+<ParamField path="datapointsToAlarm" type="number">
+  Number of breaching data points required to trigger the alarm (M out of N evaluation).
+</ParamField>
+
+**Outputs**: `arn`
+
+## aws.cloudwatch.CompositeAlarm
+
+`aws.cloudwatch.CompositeAlarm` combines multiple metric alarms or other composite alarms using boolean logic.
+
+<ParamField path="alarmName" type="string" required>
+  Unique name for the composite alarm.
+</ParamField>
+
+<ParamField path="alarmRule" type="string" required>
+  Boolean expression referencing other alarm names. For example: `ALARM(AlarmA) OR ALARM(AlarmB)`. Maximum 10,240 characters.
+</ParamField>
+
+<ParamField path="alarmActions" type="array">
+  ARNs to invoke when the composite alarm enters ALARM state. Maximum 5 actions.
+</ParamField>
+
+<ParamField path="okActions" type="array">
+  ARNs to invoke when the composite alarm returns to OK state.
+</ParamField>
+
+<ParamField path="alarmDescription" type="string">
+  Description of the composite alarm.
+</ParamField>
+
+<ParamField path="actionsSuppressor" type="object">
+  Suppresses actions when a specified alarm is in ALARM state. Requires `alarm` (suppressor alarm name), `extensionPeriod`, and `waitPeriod`.
+</ParamField>
+
+**Outputs**: `arn`
+
+## aws.cloudwatch.Dashboard
+
+`aws.cloudwatch.Dashboard` creates a CloudWatch dashboard for visualizing metrics.
+
+<ParamField path="dashboardName" type="string" required>
+  Unique name for the dashboard.
+</ParamField>
+
+<ParamField path="dashboardBody" type="string" required>
+  JSON string defining the dashboard widgets. Use `JSON.stringify()` or `pulumi.jsonStringify()` to construct this.
+</ParamField>
+
+**Outputs**: `dashboardArn`
+
+## aws.cloudwatch.EventRule
+
+`aws.cloudwatch.EventRule` creates an EventBridge rule that matches events and routes them to targets.
+
+<Note>
+EventBridge was formerly called CloudWatch Events. The resource is in the `aws.cloudwatch` namespace for historical reasons.
+</Note>
+
+<ParamField path="name" type="string">
+  Name of the rule. If omitted, a unique name is generated.
+</ParamField>
+
+<ParamField path="scheduleExpression" type="string">
+  Cron or rate expression for scheduled events. For example: `rate(5 minutes)` or `cron(0 12 * * ? *)`. Mutually exclusive with `eventPattern`.
+</ParamField>
+
+<ParamField path="eventPattern" type="string">
+  JSON event pattern that filters events. For example: `{"source": ["aws.ec2"]}`. Mutually exclusive with `scheduleExpression`.
+</ParamField>
+
+<ParamField path="eventBusName" type="string">
+  Name or ARN of the event bus. Defaults to `default`.
+</ParamField>
+
+<ParamField path="isEnabled" type="boolean">
+  Whether the rule is enabled. Defaults to `true`.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-readable description.
+</ParamField>
+
+**Outputs**: `arn`
+
+## aws.cloudwatch.EventTarget
+
+`aws.cloudwatch.EventTarget` specifies a target to invoke when an EventBridge rule matches.
+
+<ParamField path="rule" type="string" required>
+  Name of the EventBridge rule.
+</ParamField>
+
+<ParamField path="arn" type="string" required>
+  ARN of the target resource. Supports Lambda functions, SQS queues, SNS topics, Kinesis streams, ECS tasks, and more.
+</ParamField>
+
+<ParamField path="targetId" type="string">
+  Unique ID for this target within the rule. If omitted, a random ID is generated.
+</ParamField>
+
+<ParamField path="inputTransformer" type="object">
+  Transforms the matched event before passing it to the target.
+</ParamField>
+
+<ParamField path="roleArn" type="string">
+  IAM role ARN that EventBridge assumes to send events to the target.
+</ParamField>
+
+## aws.cloudwatch.LogMetricFilter
+
+`aws.cloudwatch.LogMetricFilter` extracts metric data from log events using filter patterns.
+
+<ParamField path="name" type="string" required>
+  Name for the metric filter.
+</ParamField>
+
+<ParamField path="logGroupName" type="string" required>
+  Name of the log group to filter.
+</ParamField>
+
+<ParamField path="pattern" type="string" required>
+  CloudWatch Logs filter pattern. Use an empty string `""` to match all log events.
+</ParamField>
+
+<ParamField path="metricTransformation" type="object" required>
+  Defines the metric to emit. Requires `name`, `namespace`, and `value`. Optionally accepts `unit`, `defaultValue`, and `dimensions`.
+</ParamField>
+
+## aws.cloudwatch.LogSubscriptionFilter
+
+`aws.cloudwatch.LogSubscriptionFilter` streams filtered log events to a Kinesis stream, Lambda function, or Firehose delivery stream.
+
+<ParamField path="name" type="string" required>
+  Name of the subscription filter.
+</ParamField>
+
+<ParamField path="logGroup" type="string" required>
+  Name of the log group to subscribe to.
+</ParamField>
+
+<ParamField path="filterPattern" type="string" required>
+  CloudWatch Logs filter pattern. Use `""` to match all events.
+</ParamField>
+
+<ParamField path="destinationArn" type="string" required>
+  ARN of the destination. Supports Kinesis Data Streams, Lambda functions, and Kinesis Data Firehose.
+</ParamField>
+
+<ParamField path="distribution" type="string">
+  Log distribution method. Valid values: `ByLogStream` (default), `Random`.
+</ParamField>
+
+<ParamField path="roleArn" type="string">
+  IAM role ARN. Required when the destination is a Kinesis stream or Firehose delivery stream.
+</ParamField>
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```typescript cloudwatch.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Log group for a Lambda function
+const logGroup = new aws.cloudwatch.LogGroup("appLogs", {
+    name: "/aws/lambda/my-function",
+    retentionInDays: 30,
+    tags: { Environment: "production" },
+});
+
+// SNS topic for alarm notifications
+const alarmTopic = new aws.sns.Topic("alarmTopic", {
+    name: "cloudwatch-alarms",
+});
+
+// Metric alarm: Lambda error rate
+const errorAlarm = new aws.cloudwatch.MetricAlarm("errorAlarm", {
+    name: "lambda-error-rate",
+    comparisonOperator: "GreaterThanOrEqualToThreshold",
+    evaluationPeriods: 2,
+    metricName: "Errors",
+    namespace: "AWS/Lambda",
+    period: 60,
+    statistic: "Sum",
+    threshold: 5,
+    alarmDescription: "Lambda error count exceeded threshold",
+    dimensions: { FunctionName: "my-function" },
+    alarmActions: [alarmTopic.arn],
+    okActions: [alarmTopic.arn],
+    treatMissingData: "notBreaching",
+});
+
+// Composite alarm combining two metric alarms
+const compositeAlarm = new aws.cloudwatch.CompositeAlarm("compositeAlarm", {
+    alarmName: "service-degraded",
+    alarmRule: pulumi.interpolate`ALARM(${errorAlarm.name}) OR ALARM(${latencyAlarm.name})`,
+    alarmActions: [alarmTopic.arn],
+    alarmDescription: "Service is degraded — errors or latency spike detected",
+});
+
+// Dashboard
+const dashboard = new aws.cloudwatch.Dashboard("dashboard", {
+    dashboardName: "my-service",
+    dashboardBody: JSON.stringify({
+        widgets: [{
+            type: "metric",
+            x: 0, y: 0, width: 12, height: 6,
+            properties: {
+                metrics: [["AWS/Lambda", "Errors", "FunctionName", "my-function"]],
+                period: 60,
+                stat: "Sum",
+                title: "Lambda Errors",
+            },
+        }],
+    }),
+});
+
+// EventBridge rule: invoke Lambda on a schedule
+const scheduleRule = new aws.cloudwatch.EventRule("scheduleRule", {
+    name: "daily-cleanup",
+    scheduleExpression: "rate(1 day)",
+    description: "Triggers daily cleanup Lambda",
+});
+
+const scheduleTarget = new aws.cloudwatch.EventTarget("scheduleTarget", {
+    rule: scheduleRule.name,
+    arn: cleanupFn.arn,
+});
+
+new aws.lambda.Permission("schedulePermission", {
+    action: "lambda:InvokeFunction",
+    function: cleanupFn.name,
+    principal: "events.amazonaws.com",
+    sourceArn: scheduleRule.arn,
+});
+
+// Log metric filter: count 5xx errors
+const errorFilter = new aws.cloudwatch.LogMetricFilter("errorFilter", {
+    name: "5xxErrors",
+    logGroupName: logGroup.name,
+    pattern: "[ip, id, user, timestamp, request, status_code=5*, size]",
+    metricTransformation: {
+        name: "Http5xxErrors",
+        namespace: "MyService",
+        value: "1",
+        defaultValue: "0",
+    },
+});
+
+export const logGroupArn = logGroup.arn;
+export const alarmArn = errorAlarm.arn;
+```
+
+```python cloudwatch.py
+import pulumi
+import pulumi_aws as aws
+import json
+
+# Log group
+log_group = aws.cloudwatch.LogGroup("appLogs",
+    name="/aws/lambda/my-function",
+    retention_in_days=30,
+    tags={"Environment": "production"},
+)
+
+# SNS topic for alarm actions
+alarm_topic = aws.sns.Topic("alarmTopic", name="cloudwatch-alarms")
+
+# Metric alarm
+error_alarm = aws.cloudwatch.MetricAlarm("errorAlarm",
+    name="lambda-error-rate",
+    comparison_operator="GreaterThanOrEqualToThreshold",
+    evaluation_periods=2,
+    metric_name="Errors",
+    namespace="AWS/Lambda",
+    period=60,
+    statistic="Sum",
+    threshold=5,
+    alarm_description="Lambda error count exceeded threshold",
+    dimensions={"FunctionName": "my-function"},
+    alarm_actions=[alarm_topic.arn],
+    ok_actions=[alarm_topic.arn],
+    treat_missing_data="notBreaching",
+)
+
+# Dashboard
+dashboard = aws.cloudwatch.Dashboard("dashboard",
+    dashboard_name="my-service",
+    dashboard_body=json.dumps({
+        "widgets": [{
+            "type": "metric",
+            "x": 0, "y": 0, "width": 12, "height": 6,
+            "properties": {
+                "metrics": [["AWS/Lambda", "Errors", "FunctionName", "my-function"]],
+                "period": 60,
+                "stat": "Sum",
+                "title": "Lambda Errors",
+            },
+        }],
+    }),
+)
+
+# EventBridge scheduled rule
+schedule_rule = aws.cloudwatch.EventRule("scheduleRule",
+    name="daily-cleanup",
+    schedule_expression="rate(1 day)",
+    description="Triggers daily cleanup Lambda",
+)
+
+schedule_target = aws.cloudwatch.EventTarget("scheduleTarget",
+    rule=schedule_rule.name,
+    arn=cleanup_fn.arn,
+)
+
+aws.lambda_.Permission("schedulePermission",
+    action="lambda:InvokeFunction",
+    function=cleanup_fn.name,
+    principal="events.amazonaws.com",
+    source_arn=schedule_rule.arn,
+)
+
+# Log metric filter
+error_filter = aws.cloudwatch.LogMetricFilter("errorFilter",
+    name="5xxErrors",
+    log_group_name=log_group.name,
+    pattern="[ip, id, user, timestamp, request, status_code=5*, size]",
+    metric_transformation=aws.cloudwatch.LogMetricFilterMetricTransformationArgs(
+        name="Http5xxErrors",
+        namespace="MyService",
+        value="1",
+        default_value="0",
+    ),
+)
+
+pulumi.export("log_group_arn", log_group.arn)
+pulumi.export("alarm_arn", error_alarm.arn)
+```
+
+</CodeGroup>
+
+### EventBridge pattern-based rule
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+// Trigger on EC2 instance state changes
+const ec2StateRule = new aws.cloudwatch.EventRule("ec2StateRule", {
+    name: "ec2-state-changes",
+    eventPattern: JSON.stringify({
+        source: ["aws.ec2"],
+        "detail-type": ["EC2 Instance State-change Notification"],
+        detail: { state: ["stopped", "terminated"] },
+    }),
+});
+
+const target = new aws.cloudwatch.EventTarget("ec2StateTarget", {
+    rule: ec2StateRule.name,
+    arn: notificationFn.arn,
+});
+```
+
+### Log subscription filter to Lambda
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const subscriptionFilter = new aws.cloudwatch.LogSubscriptionFilter("logForward", {
+    name: "forward-to-lambda",
+    logGroup: "/aws/lambda/my-function",
+    filterPattern: "ERROR",
+    destinationArn: logProcessorFn.arn,
+});
+
+new aws.lambda.Permission("subscriptionPermission", {
+    action: "lambda:InvokeFunction",
+    function: logProcessorFn.name,
+    principal: "logs.amazonaws.com",
+    sourceArn: pulumi.interpolate`arn:aws:logs:${aws.config.region}:${accountId}:log-group:/aws/lambda/my-function:*`,
+});
+```
+
+<Tip>
+For Lambda log groups, name the log group `/aws/lambda/{function-name}` before creating the function. This prevents Lambda from creating the group without your desired retention policy.
+</Tip>

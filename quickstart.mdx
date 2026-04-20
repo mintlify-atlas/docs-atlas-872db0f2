@@ -1,80 +1,262 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: "Get started with the Pulumi AWS Provider"
+description: "Learn how to install the Pulumi AWS Provider, configure AWS credentials, and deploy your first S3 bucket to AWS in under 5 minutes."
 ---
 
-## Get started in three steps
+The Pulumi AWS Provider lets you define and deploy AWS infrastructure using real programming languages. This quickstart walks you through creating a Pulumi project, configuring credentials, writing a resource, and running your first deployment — from zero to a live S3 bucket in minutes.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+- [Pulumi CLI installed](https://www.pulumi.com/docs/get-started/install/) (`pulumi version` should return v3 or higher)
+- An AWS account with an IAM user that has sufficient permissions
+- AWS credentials configured (see [Installation & Configuration](/installation-configuration))
 
-### Step 2: Deploy your changes
+<Note>
+  If you haven't configured AWS credentials yet, run `aws configure` with your access key and secret key, or set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` environment variables.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Deploy your first resource
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Steps>
+  <Step title="Create a new Pulumi project">
+    Use `pulumi new` to scaffold a new project with the AWS template for your language:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    <CodeGroup>
+    ```bash TypeScript
+    pulumi new aws-typescript
+    ```
+    ```bash Python
+    pulumi new aws-python
+    ```
+    ```bash Go
+    pulumi new aws-go
+    ```
+    ```bash .NET
+    pulumi new aws-csharp
+    ```
+    </CodeGroup>
 
-### Step 3: Go live
+    The wizard will ask for a project name, description, and your AWS region. Accept the defaults or customize as needed.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    <Tip>
+      You can also start from scratch with `pulumi new` and select the AWS template interactively.
+    </Tip>
+  </Step>
+
+  <Step title="Install the provider package">
+    If you're adding the provider to an existing project, install it with your language's package manager:
+
+    <CodeGroup>
+    ```bash TypeScript/JavaScript
+    npm install @pulumi/aws
+    ```
+    ```bash Python
+    pip install pulumi_aws
+    ```
+    ```bash Go
+    go get github.com/pulumi/pulumi-aws/sdk/v7
+    ```
+    ```bash .NET
+    dotnet add package Pulumi.Aws
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Write your first resource">
+    Replace the contents of your main program file with a simple S3 bucket with versioning enabled:
+
+    <CodeGroup>
+    ```typescript TypeScript (index.ts)
+    import * as pulumi from "@pulumi/pulumi";
+    import * as aws from "@pulumi/aws";
+
+    // Create an S3 bucket
+    const bucket = new aws.s3.Bucket("my-bucket", {
+        tags: {
+            Environment: "dev",
+        },
+    });
+
+    // Enable versioning on the bucket
+    const versioning = new aws.s3.BucketVersioning("my-bucket-versioning", {
+        bucket: bucket.id,
+        versioningConfiguration: {
+            status: "Enabled",
+        },
+    });
+
+    // Export the bucket name and ARN
+    export const bucketName = bucket.id;
+    export const bucketArn = bucket.arn;
+    ```
+    ```python Python (__main__.py)
+    import pulumi
+    import pulumi_aws as aws
+
+    # Create an S3 bucket
+    bucket = aws.s3.Bucket("my-bucket",
+        tags={
+            "Environment": "dev",
+        }
+    )
+
+    # Enable versioning on the bucket
+    versioning = aws.s3.BucketVersioning("my-bucket-versioning",
+        bucket=bucket.id,
+        versioning_configuration=aws.s3.BucketVersioningVersioningConfigurationArgs(
+            status="Enabled",
+        )
+    )
+
+    # Export the bucket name and ARN
+    pulumi.export("bucket_name", bucket.id)
+    pulumi.export("bucket_arn", bucket.arn)
+    ```
+    ```go Go (main.go)
+    package main
+
+    import (
+        "github.com/pulumi/pulumi-aws/sdk/v7/go/aws/s3"
+        "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+    )
+
+    func main() {
+        pulumi.Run(func(ctx *pulumi.Context) error {
+            // Create an S3 bucket
+            bucket, err := s3.NewBucket(ctx, "my-bucket", &s3.BucketArgs{
+                Tags: pulumi.StringMap{
+                    "Environment": pulumi.String("dev"),
+                },
+            })
+            if err != nil {
+                return err
+            }
+
+            // Enable versioning
+            _, err = s3.NewBucketVersioning(ctx, "my-bucket-versioning", &s3.BucketVersioningArgs{
+                Bucket: bucket.ID(),
+                VersioningConfiguration: &s3.BucketVersioningVersioningConfigurationArgs{
+                    Status: pulumi.String("Enabled"),
+                },
+            })
+            if err != nil {
+                return err
+            }
+
+            ctx.Export("bucketName", bucket.ID())
+            ctx.Export("bucketArn", bucket.Arn)
+            return nil
+        })
+    }
+    ```
+    ```csharp .NET (Program.cs)
+    using Pulumi;
+    using Aws = Pulumi.Aws;
+
+    return await Deployment.RunAsync(() =>
+    {
+        // Create an S3 bucket
+        var bucket = new Aws.S3.Bucket("my-bucket", new Aws.S3.BucketArgs
+        {
+            Tags = new InputMap<string>
+            {
+                { "Environment", "dev" },
+            },
+        });
+
+        // Enable versioning
+        var versioning = new Aws.S3.BucketVersioning("my-bucket-versioning", new Aws.S3.BucketVersioningArgs
+        {
+            Bucket = bucket.Id,
+            VersioningConfiguration = new Aws.S3.Inputs.BucketVersioningVersioningConfigurationArgs
+            {
+                Status = "Enabled",
+            },
+        });
+
+        return new Dictionary<string, object?>
+        {
+            ["bucketName"] = bucket.Id,
+            ["bucketArn"] = bucket.Arn,
+        };
+    });
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Preview and deploy">
+    Run `pulumi up` to preview the changes and deploy:
+
+    ```bash
+    pulumi up
+    ```
+
+    Pulumi shows a preview of the resources it will create. Confirm by selecting `yes`:
+
+    ```
+    Previewing update (dev)
+
+    Type                            Name                       Plan
+    +   pulumi:pulumi:Stack         my-project-dev             create
+    +   ├─ aws:s3:Bucket            my-bucket                  create
+    +   └─ aws:s3:BucketVersioning  my-bucket-versioning       create
+
+    Resources:
+        + 2 to create
+
+    Do you want to perform this update? yes
+    Updating (dev)
+
+    Type                            Name                       Status
+    +   pulumi:pulumi:Stack         my-project-dev             created
+    +   ├─ aws:s3:Bucket            my-bucket                  created
+    +   └─ aws:s3:BucketVersioning  my-bucket-versioning       created
+
+    Outputs:
+        bucketArn  = "arn:aws:s3:::my-bucket-a1b2c3d4"
+        bucketName = "my-bucket-a1b2c3d4"
+
+    Resources:
+        + 2 created
+
+    Duration: 8s
+    ```
+
+    <Tip>
+      Run `pulumi preview` first if you want to see the plan without deploying.
+    </Tip>
+  </Step>
+
+  <Step title="Clean up">
+    When you're done, destroy the resources to avoid incurring AWS charges:
+
+    ```bash
+    pulumi destroy
+    ```
+
+    <Warning>
+      `pulumi destroy` permanently deletes all resources in the stack. Make sure you don't need them before running this command.
+    </Warning>
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have a working Pulumi AWS project, explore what else you can build:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation & Configuration" icon="gear" href="/installation-configuration">
+    Configure credentials, profiles, role chaining, and Pulumi ESC
+  </Card>
+  <Card title="Serverless guide" icon="bolt" href="/guides/serverless">
+    Build Lambda functions and event-driven architectures
+  </Card>
+  <Card title="Containers guide" icon="docker" href="/guides/containers">
+    Deploy workloads on ECS Fargate or Amazon EKS
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/provider">
+    Browse all resources, inputs, and outputs
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

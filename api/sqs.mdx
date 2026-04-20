@@ -1,0 +1,307 @@
+---
+title: "aws.sqs — SQS queues, policies, and FIFO queues"
+description: "Reference for the aws.sqs module: create standard and FIFO queues, set dead-letter queues, configure queue policies, and trigger Lambda."
+---
+
+Amazon Simple Queue Service (SQS) provides fully managed message queuing that decouples producers from consumers. The `aws.sqs` module covers standard queues, FIFO queues, dead-letter queues, access policies, and Lambda event source mappings.
+
+<Warning>
+When creating or updating an `aws.sqs.Queue` with an associated `aws.sqs.QueuePolicy`, the policy document **must** include `"Version": "2012-10-17"`. Without it, AWS will hang and the provider will time out.
+</Warning>
+
+## aws.sqs.Queue
+
+`aws.sqs.Queue` creates a standard or FIFO SQS queue.
+
+<ParamField path="name" type="string">
+  Queue name. For FIFO queues, the name must end with `.fifo`. Maximum 80 characters. Conflicts with `namePrefix`.
+</ParamField>
+
+<ParamField path="visibilityTimeoutSeconds" type="number">
+  Duration (0–43200 seconds) a received message is hidden from other consumers. Default is 30.
+</ParamField>
+
+<ParamField path="messageRetentionSeconds" type="number">
+  How long (60–1,209,600 seconds) SQS retains a message. Default is 345,600 (4 days).
+</ParamField>
+
+<ParamField path="maxMessageSize" type="number">
+  Maximum message size in bytes (1,024–1,048,576). Default is 262,144 (256 KiB).
+</ParamField>
+
+<ParamField path="delaySeconds" type="number">
+  Delivery delay for all messages (0–900 seconds). Default is 0.
+</ParamField>
+
+<ParamField path="receiveWaitTimeSeconds" type="number">
+  Long-polling wait time (0–20 seconds). Setting this above 0 enables long polling. Default is 0.
+</ParamField>
+
+<ParamField path="redrivePolicy" type="string">
+  JSON policy string that configures a dead-letter queue. Requires `deadLetterTargetArn` (the DLQ ARN) and `maxReceiveCount` (integer). Prefer using `aws.sqs.RedrivePolicy` instead.
+</ParamField>
+
+<ParamField path="sqsManagedSseEnabled" type="boolean">
+  Enables SQS-managed server-side encryption (SSE-SQS). Mutually exclusive with `kmsMasterKeyId`.
+</ParamField>
+
+<ParamField path="kmsMasterKeyId" type="string">
+  KMS key ID or alias for customer-managed SSE-KMS encryption. For example: `alias/aws/sqs`.
+</ParamField>
+
+<ParamField path="kmsDataKeyReusePeriodSeconds" type="number">
+  How long (60–86,400 seconds) SQS reuses a KMS data key before requesting a new one. Default is 300.
+</ParamField>
+
+<ParamField path="fifoQueue" type="boolean">
+  Designates this as a FIFO queue. Requires `name` to end with `.fifo`. Default is `false`.
+</ParamField>
+
+<ParamField path="contentBasedDeduplication" type="boolean">
+  Enables content-based deduplication for FIFO queues. Messages with identical content within the deduplication window are deduplicated automatically.
+</ParamField>
+
+<ParamField path="deduplicationScope" type="string">
+  Controls deduplication scope for FIFO queues. Valid values: `messageGroup`, `queue` (default).
+</ParamField>
+
+<ParamField path="fifoThroughputLimit" type="string">
+  FIFO throughput quota scope. Valid values: `perQueue` (default), `perMessageGroupId`.
+</ParamField>
+
+<ParamField path="tags" type="map">
+  Key-value map of resource tags.
+</ParamField>
+
+**Outputs**: `arn`, `url` (same as `id`)
+
+## aws.sqs.QueuePolicy
+
+`aws.sqs.QueuePolicy` attaches an IAM resource policy to a queue.
+
+<ParamField path="queueUrl" type="string" required>
+  URL of the SQS queue. Use `queue.id` or `queue.url`.
+</ParamField>
+
+<ParamField path="policy" type="string" required>
+  JSON policy document. Must include `"Version": "2012-10-17"`. Use `aws.iam.getPolicyDocument` to build the policy.
+</ParamField>
+
+## aws.sqs.RedrivePolicy
+
+`aws.sqs.RedrivePolicy` manages the dead-letter queue configuration as a separate resource (preferred over the inline `redrivePolicy` on `Queue`).
+
+<ParamField path="queueUrl" type="string" required>
+  URL of the source queue.
+</ParamField>
+
+<ParamField path="redrivePolicy" type="string" required>
+  JSON string with `deadLetterTargetArn` and `maxReceiveCount`.
+</ParamField>
+
+## aws.sqs.RedriveAllowPolicy
+
+`aws.sqs.RedriveAllowPolicy` controls which source queues are allowed to use a dead-letter queue.
+
+<ParamField path="queueUrl" type="string" required>
+  URL of the dead-letter queue.
+</ParamField>
+
+<ParamField path="redriveAllowPolicy" type="string" required>
+  JSON string with `redrivePermission` (`allowAll`, `denyAll`, or `byQueue`) and optionally `sourceQueueArns`.
+</ParamField>
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```typescript standard-queue.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Dead-letter queue
+const dlq = new aws.sqs.Queue("dlq", {
+    name: "orders-dlq",
+    messageRetentionSeconds: 1209600, // 14 days
+});
+
+// Main queue with DLQ
+const queue = new aws.sqs.Queue("queue", {
+    name: "orders",
+    visibilityTimeoutSeconds: 60,
+    messageRetentionSeconds: 86400,
+    receiveWaitTimeSeconds: 10,
+    sqsManagedSseEnabled: true,
+    tags: { Environment: "production" },
+});
+
+const redrivePolicy = new aws.sqs.RedrivePolicy("redrivePolicy", {
+    queueUrl: queue.url,
+    redrivePolicy: pulumi.jsonStringify({
+        deadLetterTargetArn: dlq.arn,
+        maxReceiveCount: 5,
+    }),
+});
+
+// Queue policy allowing SNS to send messages
+const policy = new aws.sqs.QueuePolicy("policy", {
+    queueUrl: queue.id,
+    policy: pulumi.jsonStringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Principal: { Service: "sns.amazonaws.com" },
+            Action: "sqs:SendMessage",
+            Resource: queue.arn,
+        }],
+    }),
+});
+
+export const queueUrl = queue.url;
+export const queueArn = queue.arn;
+```
+
+```python standard_queue.py
+import pulumi
+import pulumi_aws as aws
+import json
+
+# Dead-letter queue
+dlq = aws.sqs.Queue("dlq",
+    name="orders-dlq",
+    message_retention_seconds=1209600,
+)
+
+# Main queue
+queue = aws.sqs.Queue("queue",
+    name="orders",
+    visibility_timeout_seconds=60,
+    message_retention_seconds=86400,
+    receive_wait_time_seconds=10,
+    sqs_managed_sse_enabled=True,
+    tags={"Environment": "production"},
+)
+
+redrive = aws.sqs.RedrivePolicy("redrivePolicy",
+    queue_url=queue.url,
+    redrive_policy=pulumi.Output.json_dumps({
+        "deadLetterTargetArn": dlq.arn,
+        "maxReceiveCount": 5,
+    }),
+)
+
+policy = aws.sqs.QueuePolicy("policy",
+    queue_url=queue.id,
+    policy=pulumi.Output.json_dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "sns.amazonaws.com"},
+            "Action": "sqs:SendMessage",
+            "Resource": queue.arn,
+        }],
+    }),
+)
+
+pulumi.export("queue_url", queue.url)
+```
+
+</CodeGroup>
+
+### FIFO queue
+
+<CodeGroup>
+
+```typescript fifo-queue.ts
+import * as aws from "@pulumi/aws";
+
+const fifoQueue = new aws.sqs.Queue("fifoQueue", {
+    name: "orders.fifo",
+    fifoQueue: true,
+    contentBasedDeduplication: true,
+    visibilityTimeoutSeconds: 30,
+    messageRetentionSeconds: 86400,
+});
+
+export const fifoQueueUrl = fifoQueue.url;
+```
+
+```python fifo_queue.py
+import pulumi_aws as aws
+
+fifo_queue = aws.sqs.Queue("fifoQueue",
+    name="orders.fifo",
+    fifo_queue=True,
+    content_based_deduplication=True,
+    visibility_timeout_seconds=30,
+    message_retention_seconds=86400,
+)
+
+import pulumi
+pulumi.export("fifo_queue_url", fifo_queue.url)
+```
+
+</CodeGroup>
+
+<Note>
+FIFO queue names must end with `.fifo`. FIFO queues preserve message order within a message group and guarantee exactly-once delivery. High-throughput FIFO queues can be enabled by setting `deduplicationScope` to `messageGroup` and `fifoThroughputLimit` to `perMessageGroupId`.
+</Note>
+
+### SQS as Lambda trigger
+
+Use `aws.lambda.EventSourceMapping` to poll SQS and invoke a Lambda function.
+
+<CodeGroup>
+
+```typescript lambda-trigger.ts
+import * as aws from "@pulumi/aws";
+
+// Assumes `queue` and `fn` (Lambda) are defined elsewhere
+const mapping = new aws.lambda.EventSourceMapping("mapping", {
+    eventSourceArn: queue.arn,
+    functionName: fn.arn,
+    batchSize: 10,
+    functionResponseTypes: ["ReportBatchItemFailures"],
+});
+```
+
+```python lambda_trigger.py
+import pulumi_aws as aws
+
+mapping = aws.lambda_.EventSourceMapping("mapping",
+    event_source_arn=queue.arn,
+    function_name=fn.arn,
+    batch_size=10,
+    function_response_types=["ReportBatchItemFailures"],
+)
+```
+
+</CodeGroup>
+
+<Tip>
+Set `functionResponseTypes: ["ReportBatchItemFailures"]` to allow partial batch success reporting. Failed messages are retried individually rather than reprocessing the whole batch.
+</Tip>
+
+### SSE encryption options
+
+<Tabs>
+  <Tab title="SQS-managed (SSE-SQS)">
+    ```typescript
+    const queue = new aws.sqs.Queue("queue", {
+        name: "my-queue",
+        sqsManagedSseEnabled: true,
+    });
+    ```
+  </Tab>
+  <Tab title="KMS-managed (SSE-KMS)">
+    ```typescript
+    const queue = new aws.sqs.Queue("queue", {
+        name: "my-queue",
+        kmsMasterKeyId: "alias/aws/sqs",
+        kmsDataKeyReusePeriodSeconds: 300,
+    });
+    ```
+  </Tab>
+</Tabs>

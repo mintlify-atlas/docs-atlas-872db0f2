@@ -1,0 +1,533 @@
+---
+title: "aws.lambda — Lambda functions and serverless compute"
+description: "Reference for aws.lambda resources: deploy functions from code assets or container images, manage layers, aliases, and event source mappings."
+---
+
+The `aws.lambda` module provides everything needed to run serverless code on AWS: functions (deployed as ZIP archives or container images), reusable dependency layers, event source mappings that connect streams and queues to functions, and permission grants for external callers. TypeScript programs can also use `aws.lambda.CallbackFunction` to serialize a JavaScript function directly into a Lambda without managing a deployment package.
+
+---
+
+## aws.lambda.Function
+
+The primary resource for deploying a Lambda function. Code can be provided as a local archive, an S3 object, or a container image URI.
+
+### Key inputs
+
+<ParamField path="code" type="pulumi.asset.Archive">
+  A `FileArchive` pointing to a local ZIP file, or an `AssetArchive` built from individual files. Use this for ZIP-based deployments. Mutually exclusive with `imageUri`.
+</ParamField>
+
+<ParamField path="imageUri" type="string">
+  The ECR image URI for container image deployments. Set `packageType` to `"Image"` when using this field.
+</ParamField>
+
+<ParamField path="packageType" type="string">
+  `"Zip"` (default) or `"Image"`. Must be `"Image"` when `imageUri` is set.
+</ParamField>
+
+<ParamField path="runtime" type="string | Runtime">
+  The Lambda runtime identifier. Use values from the `aws.lambda.Runtime` enum or a plain string. Common values: `nodejs20.x`, `python3.12`, `java21`, `provided.al2023`.
+</ParamField>
+
+<ParamField path="handler" type="string">
+  The function entrypoint in the format `filename.exportedFunction` (e.g., `"index.handler"`). Not applicable for `"Image"` package type.
+</ParamField>
+
+<ParamField path="role" type="string" required>
+  The ARN of the IAM execution role that Lambda assumes when running the function.
+</ParamField>
+
+<ParamField path="environment" type="object">
+  Environment variables: `{ variables: { KEY: "value" } }`.
+</ParamField>
+
+<ParamField path="layers" type="string[]">
+  List of Lambda Layer version ARNs to attach (up to five).
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  Maximum execution time in seconds. Defaults to `3`. Maximum is `900`.
+</ParamField>
+
+<ParamField path="memorySize" type="number">
+  Memory allocated in MB. Defaults to `128`. Increasing memory also increases vCPU allocation.
+</ParamField>
+
+<ParamField path="architectures" type="string[]">
+  CPU architecture: `["x86_64"]` (default) or `["arm64"]`.
+</ParamField>
+
+<ParamField path="vpcConfig" type="object">
+  Place the function inside a VPC: `{ subnetIds, securityGroupIds }`.
+</ParamField>
+
+### Runtime enum values
+
+| Enum | String value |
+|---|---|
+| `aws.lambda.Runtime.NodeJS20dX` | `nodejs20.x` |
+| `aws.lambda.Runtime.NodeJS18dX` | `nodejs18.x` |
+| `aws.lambda.Runtime.Python3d12` | `python3.12` |
+| `aws.lambda.Runtime.Python3d11` | `python3.11` |
+| `aws.lambda.Runtime.Java21` | `java21` |
+| `aws.lambda.Runtime.CustomAL2` | `provided.al2` |
+
+### ZIP-based function example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const role = new aws.iam.Role("fn-role", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: { Service: "lambda.amazonaws.com" },
+        }],
+    }),
+});
+
+new aws.iam.RolePolicyAttachment("fn-logs", {
+    role: role.name,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+});
+
+const fn = new aws.lambda.Function("api", {
+    code: new pulumi.asset.FileArchive("./dist/function.zip"),
+    name: "api-handler",
+    role: role.arn,
+    handler: "index.handler",
+    runtime: aws.lambda.Runtime.NodeJS20dX,
+    memorySize: 256,
+    timeout: 30,
+    environment: {
+        variables: {
+            TABLE_NAME: "my-table",
+            LOG_LEVEL: "info",
+        },
+    },
+    tags: { Environment: "production" },
+});
+
+export const fnArn = fn.arn;
+```
+
+```python Python
+import json
+import pulumi
+import pulumi_aws as aws
+
+role = aws.iam.Role(
+    "fn-role",
+    assume_role_policy=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Action": "sts:AssumeRole",
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+        }],
+    }),
+)
+
+aws.iam.RolePolicyAttachment(
+    "fn-logs",
+    role=role.name,
+    policy_arn=aws.iam.ManagedPolicy.AWS_LAMBDA_BASIC_EXECUTION_ROLE,
+)
+
+fn = aws.lambda_.Function(
+    "api",
+    code=pulumi.FileArchive("./dist/function.zip"),
+    name="api-handler",
+    role=role.arn,
+    handler="index.handler",
+    runtime=aws.lambda_.Runtime.NODE_JS20D_X,
+    memory_size=256,
+    timeout=30,
+    environment=aws.lambda_.FunctionEnvironmentArgs(
+        variables={
+            "TABLE_NAME": "my-table",
+            "LOG_LEVEL": "info",
+        }
+    ),
+    tags={"Environment": "production"},
+)
+
+pulumi.export("fn_arn", fn.arn)
+```
+
+</CodeGroup>
+
+### Container image function example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const fn = new aws.lambda.Function("container-fn", {
+    name: "container-function",
+    role: role.arn,
+    packageType: "Image",
+    imageUri: `${ecrRepo.repositoryUrl}:latest`,
+    imageConfig: {
+        commands: ["app.handler"],
+    },
+    memorySize: 512,
+    timeout: 30,
+    architectures: ["arm64"],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+fn = aws.lambda_.Function(
+    "container-fn",
+    name="container-function",
+    role=role.arn,
+    package_type="Image",
+    image_uri=ecr_repo.repository_url.apply(lambda url: f"{url}:latest"),
+    image_config=aws.lambda_.FunctionImageConfigArgs(
+        commands=["app.handler"],
+    ),
+    memory_size=512,
+    timeout=30,
+    architectures=["arm64"],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.lambda.CallbackFunction
+
+TypeScript-only higher-level resource. Wraps a plain JavaScript/TypeScript async function and deploys it as a Lambda without requiring a pre-built ZIP. Pulumi serializes the function and its captured dependencies at `pulumi up` time.
+
+<Note>
+`CallbackFunction` is only available in TypeScript/JavaScript programs. When no `role` is specified, a role with broad managed policies is created automatically. For production use, provide a least-privilege role or explicit `policies`.
+</Note>
+
+### Key inputs
+
+<ParamField path="callback" type="(event, context, callback) => Promise<R>">
+  The async function to deploy. Either `callback` or `callbackFactory` must be provided.
+</ParamField>
+
+<ParamField path="callbackFactory" type="() => Callback">
+  A factory function called once on cold start, returning the handler function. Useful for expensive initialization.
+</ParamField>
+
+<ParamField path="role" type="iam.Role | string">
+  An IAM Role instance or ARN. If omitted, a role with default managed policies is created.
+</ParamField>
+
+<ParamField path="policies" type="string[] | Record<string, string>">
+  Policy ARNs to attach to the auto-created role. Ignored when `role` is provided.
+</ParamField>
+
+### Example
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+// Simplest form — role is created automatically
+const greet = new aws.lambda.CallbackFunction("greet", {
+    callback: async (event: any) => {
+        return { statusCode: 200, body: "Hello from Lambda!" };
+    },
+});
+
+// Using a pre-created role
+const role = new aws.iam.Role("role", {
+    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({ Service: "lambda.amazonaws.com" }),
+});
+
+const process = new aws.lambda.CallbackFunction("process", {
+    role: role,
+    callback: async (event: { records: string[] }) => {
+        for (const r of event.records) {
+            console.log("Processing:", r);
+        }
+    },
+});
+
+// callbackFactory — runs expensive init once on cold start
+const withInit = new aws.lambda.CallbackFunction("with-init", {
+    policies: [aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole],
+    callbackFactory: () => {
+        const client = new SomeExpensiveClient();
+        return async (event: any) => client.handle(event);
+    },
+});
+
+export const greetArn = greet.arn;
+```
+
+---
+
+## aws.lambda.LayerVersion
+
+Packages shared code or dependencies into a Lambda layer that multiple functions can reference.
+
+### Key inputs
+
+<ParamField path="layerName" type="string" required>
+  The name of the layer.
+</ParamField>
+
+<ParamField path="code" type="pulumi.asset.Archive">
+  A `FileArchive` pointing to the layer ZIP. Alternatively use `s3Bucket` / `s3Key` for S3-hosted archives.
+</ParamField>
+
+<ParamField path="compatibleRuntimes" type="string[]">
+  Runtimes that can use this layer (e.g., `["nodejs20.x", "python3.12"]`).
+</ParamField>
+
+<ParamField path="compatibleArchitectures" type="string[]">
+  CPU architectures: `["x86_64"]`, `["arm64"]`, or both.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-readable description of the layer's contents.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const depsLayer = new aws.lambda.LayerVersion("deps", {
+    code: new pulumi.asset.FileArchive("./layers/deps.zip"),
+    layerName: "shared-dependencies",
+    description: "Common npm dependencies",
+    compatibleRuntimes: ["nodejs20.x"],
+    compatibleArchitectures: ["x86_64", "arm64"],
+});
+
+// Attach the layer to a function
+const fn = new aws.lambda.Function("api", {
+    code: new pulumi.asset.FileArchive("./dist/function.zip"),
+    role: role.arn,
+    handler: "index.handler",
+    runtime: aws.lambda.Runtime.NodeJS20dX,
+    layers: [depsLayer.arn],
+});
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+deps_layer = aws.lambda_.LayerVersion(
+    "deps",
+    code=pulumi.FileArchive("./layers/deps.zip"),
+    layer_name="shared-dependencies",
+    description="Common Python dependencies",
+    compatible_runtimes=["python3.12"],
+    compatible_architectures=["x86_64", "arm64"],
+)
+
+fn = aws.lambda_.Function(
+    "api",
+    code=pulumi.FileArchive("./dist/function.zip"),
+    role=role.arn,
+    handler="index.handler",
+    runtime=aws.lambda_.Runtime.PYTHON3D12,
+    layers=[deps_layer.arn],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.lambda.EventSourceMapping
+
+Connects an event source (SQS queue, DynamoDB stream, Kinesis stream, etc.) to a Lambda function. Lambda polls the source and invokes the function with batches of records.
+
+### Key inputs
+
+<ParamField path="eventSourceArn" type="string" required>
+  The ARN of the SQS queue, DynamoDB stream, Kinesis stream, or MSK cluster.
+</ParamField>
+
+<ParamField path="functionName" type="string" required>
+  The name or ARN of the Lambda function to invoke.
+</ParamField>
+
+<ParamField path="startingPosition" type="string">
+  For Kinesis/DynamoDB streams: `"LATEST"` or `"TRIM_HORIZON"`. Not applicable for SQS.
+</ParamField>
+
+<ParamField path="batchSize" type="number">
+  Maximum number of records per invocation. Defaults vary by source type.
+</ParamField>
+
+<ParamField path="maximumBatchingWindowInSeconds" type="number">
+  Time Lambda waits to gather records before invoking (up to 300 seconds).
+</ParamField>
+
+<ParamField path="filterCriteria" type="object">
+  Optional event filtering patterns to reduce invocations.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+// SQS → Lambda
+const sqsMapping = new aws.lambda.EventSourceMapping("sqs-trigger", {
+    eventSourceArn: queue.arn,
+    functionName: fn.arn,
+    batchSize: 10,
+    scalingConfig: { maximumConcurrency: 50 },
+});
+
+// DynamoDB stream → Lambda
+const dynamoMapping = new aws.lambda.EventSourceMapping("dynamo-trigger", {
+    eventSourceArn: table.streamArn,
+    functionName: fn.arn,
+    startingPosition: "LATEST",
+    batchSize: 100,
+    maximumBatchingWindowInSeconds: 5,
+});
+
+// Kinesis stream → Lambda with DLQ on failure
+const kinesisMapping = new aws.lambda.EventSourceMapping("kinesis-trigger", {
+    eventSourceArn: stream.arn,
+    functionName: fn.arn,
+    startingPosition: "LATEST",
+    batchSize: 100,
+    parallelizationFactor: 2,
+    destinationConfig: {
+        onFailure: { destinationArn: dlq.arn },
+    },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+sqs_mapping = aws.lambda_.EventSourceMapping(
+    "sqs-trigger",
+    event_source_arn=queue.arn,
+    function_name=fn.arn,
+    batch_size=10,
+)
+
+dynamo_mapping = aws.lambda_.EventSourceMapping(
+    "dynamo-trigger",
+    event_source_arn=table.stream_arn,
+    function_name=fn.arn,
+    starting_position="LATEST",
+    batch_size=100,
+    maximum_batching_window_in_seconds=5,
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.lambda.Permission
+
+Grants an AWS service or account permission to invoke a Lambda function. Required whenever an external service (API Gateway, S3, SNS, EventBridge, etc.) needs to trigger your function.
+
+<Tip>
+`aws.lambda.Permission` controls resource-based policies on the Lambda itself (who can call it). This is distinct from the execution `role`, which controls what the function can do inside AWS.
+</Tip>
+
+### Key inputs
+
+<ParamField path="function" type="string" required>
+  The Lambda function name or ARN to grant permission on.
+</ParamField>
+
+<ParamField path="action" type="string" required>
+  The Lambda action to allow. Almost always `"lambda:InvokeFunction"`.
+</ParamField>
+
+<ParamField path="principal" type="string" required>
+  The AWS service principal being granted access (e.g., `"apigateway.amazonaws.com"`, `"s3.amazonaws.com"`, `"events.amazonaws.com"`).
+</ParamField>
+
+<ParamField path="sourceArn" type="string">
+  Restricts the permission to a specific resource ARN from the principal. Prevents confused-deputy attacks.
+</ParamField>
+
+<ParamField path="statementId" type="string">
+  Unique identifier for this permission statement.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Allow API Gateway to invoke the function
+const apiPermission = new aws.lambda.Permission("api-invoke", {
+    statementId: "AllowAPIGatewayInvoke",
+    action: "lambda:InvokeFunction",
+    function: fn.name,
+    principal: "apigateway.amazonaws.com",
+    sourceArn: pulumi.interpolate`${restApi.executionArn}/*`,
+});
+
+// Allow S3 to invoke on object uploads
+const s3Permission = new aws.lambda.Permission("s3-invoke", {
+    statementId: "AllowS3Invoke",
+    action: "lambda:InvokeFunction",
+    function: fn.name,
+    principal: "s3.amazonaws.com",
+    sourceArn: bucket.arn,
+});
+
+// Allow EventBridge rule to invoke
+const eventsPermission = new aws.lambda.Permission("events-invoke", {
+    statementId: "AllowEventBridgeInvoke",
+    action: "lambda:InvokeFunction",
+    function: fn.name,
+    principal: "events.amazonaws.com",
+    sourceArn: rule.arn,
+});
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+api_permission = aws.lambda_.Permission(
+    "api-invoke",
+    statement_id="AllowAPIGatewayInvoke",
+    action="lambda:InvokeFunction",
+    function=fn.name,
+    principal="apigateway.amazonaws.com",
+    source_arn=rest_api.execution_arn.apply(lambda arn: f"{arn}/*"),
+)
+
+s3_permission = aws.lambda_.Permission(
+    "s3-invoke",
+    statement_id="AllowS3Invoke",
+    action="lambda:InvokeFunction",
+    function=fn.name,
+    principal="s3.amazonaws.com",
+    source_arn=bucket.arn,
+)
+```
+
+</CodeGroup>

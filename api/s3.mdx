@@ -1,0 +1,421 @@
+---
+title: "aws.s3 — S3 buckets, objects, and bucket configuration"
+description: "Reference for the aws.s3 module: create buckets, configure versioning, lifecycle policies, server-side encryption, and cross-region replication."
+---
+
+The `aws.s3` module provides resources for managing Amazon S3 general-purpose buckets, their configuration, and the objects stored within them. In v7 of the Pulumi AWS provider, `aws.s3.Bucket` was unified with the upstream implementation and companion resources dropped the `V2` suffix — use `aws.s3.BucketVersioning`, `aws.s3.BucketLifecycleConfiguration`, and so on.
+
+<Warning>
+**v7 breaking changes for `aws.s3.Bucket`**
+
+Two properties changed when migrating from v6 to v7:
+
+- `loggings` (array) → `logging` (single object). If you pass an array, the provider will error.
+- `website.routingRules` now accepts only a **string** (JSON-encoded), not an array of objects.
+
+Run `pulumi up --refresh --run-program` after updating your code to migrate state.
+</Warning>
+
+## aws.s3.Bucket
+
+The primary resource for creating an S3 general-purpose bucket.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const bucket = new aws.s3.Bucket("my-bucket", {
+    bucket: "my-app-assets",
+    tags: {
+        Environment: "production",
+        Team: "platform",
+    },
+    // region is now used for Enhanced Region Support (v7).
+    // To read the bucket's AWS region, use the bucketRegion output attribute.
+});
+
+export const bucketName = bucket.bucket;
+export const bucketRegion = bucket.bucketRegion;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+bucket = aws.s3.Bucket("my-bucket",
+    bucket="my-app-assets",
+    tags={
+        "Environment": "production",
+        "Team": "platform",
+    },
+)
+
+pulumi.export("bucket_name", bucket.bucket)
+pulumi.export("bucket_region", bucket.bucket_region)
+```
+
+</CodeGroup>
+
+<Note>
+`bucketRegion` (output-only) replaces `region` for reading where a bucket resides. The `region` input is now reserved for [Enhanced Region Support](https://www.pulumi.com/registry/packages/aws/how-to-guides/7-0-migration/).
+</Note>
+
+### Key inputs
+
+<ParamField path="bucket" type="string">
+  Name of the bucket. Must be lowercase, 3–63 characters. If omitted, a random unique name is generated.
+</ParamField>
+
+<ParamField path="bucketPrefix" type="string">
+  Prefix for a randomly generated bucket name. Conflicts with `bucket`.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Map of key-value tags to assign to the bucket.
+</ParamField>
+
+<ParamField path="region" type="string">
+  Region where the resource is managed (v7 Enhanced Region Support). Defaults to the provider region.
+</ParamField>
+
+<ParamField path="forceDestroy" type="boolean">
+  When `true`, all objects (including locked objects) are deleted when the bucket is destroyed. Defaults to `false`.
+</ParamField>
+
+<ParamField path="objectLockEnabled" type="boolean">
+  Enable S3 Object Lock on the bucket. Cannot be disabled once enabled.
+</ParamField>
+
+<ParamField path="logging" type="object">
+  Single logging configuration block with `targetBucket` and optional `targetPrefix`. **(v7: was `loggings` array)**
+</ParamField>
+
+### Key outputs
+
+| Attribute | Description |
+|---|---|
+| `arn` | ARN of the bucket (`arn:aws:s3:::bucket-name`). |
+| `bucketRegion` | AWS region where the bucket resides (use instead of `region` output). |
+| `bucketDomainName` | Global domain name (`bucket.s3.amazonaws.com`). |
+| `bucketRegionalDomainName` | Region-specific domain name, preferred for CloudFront origins. |
+| `hostedZoneId` | Route 53 hosted zone ID for alias records. |
+
+---
+
+## Companion resources
+
+In v7, companion bucket-configuration resources no longer require a `V2` suffix. The old `V2` names remain as aliases but will be removed in v8.
+
+### aws.s3.BucketVersioning
+
+Enable or suspend versioning on a bucket.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const bucket = new aws.s3.Bucket("versioned", { bucket: "my-versioned-bucket" });
+
+const versioning = new aws.s3.BucketVersioning("versioning", {
+    bucket: bucket.id,
+    versioningConfiguration: {
+        status: "Enabled",
+    },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+bucket = aws.s3.Bucket("versioned", bucket="my-versioned-bucket")
+
+versioning = aws.s3.BucketVersioning("versioning",
+    bucket=bucket.id,
+    versioning_configuration=aws.s3.BucketVersioningVersioningConfigurationArgs(
+        status="Enabled",
+    ),
+)
+```
+
+</CodeGroup>
+
+### aws.s3.BucketServerSideEncryptionConfiguration
+
+Apply default server-side encryption to all objects.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const bucket = new aws.s3.Bucket("encrypted", { bucket: "my-encrypted-bucket" });
+
+const sse = new aws.s3.BucketServerSideEncryptionConfiguration("sse", {
+    bucket: bucket.id,
+    rules: [{
+        applyServerSideEncryptionByDefault: {
+            sseAlgorithm: "aws:kms",
+        },
+        bucketKeyEnabled: true,
+    }],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+bucket = aws.s3.Bucket("encrypted", bucket="my-encrypted-bucket")
+
+sse = aws.s3.BucketServerSideEncryptionConfiguration("sse",
+    bucket=bucket.id,
+    rules=[aws.s3.BucketServerSideEncryptionConfigurationRuleArgs(
+        apply_server_side_encryption_by_default=aws.s3.BucketServerSideEncryptionConfigurationRuleApplyServerSideEncryptionByDefaultArgs(
+            sse_algorithm="aws:kms",
+        ),
+        bucket_key_enabled=True,
+    )],
+)
+```
+
+</CodeGroup>
+
+### aws.s3.BucketLifecycleConfiguration
+
+Define lifecycle rules to transition or expire objects automatically.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const lifecycle = new aws.s3.BucketLifecycleConfiguration("lifecycle", {
+    bucket: bucket.id,
+    rules: [{
+        id: "expire-old-logs",
+        status: "Enabled",
+        filter: { prefix: "logs/" },
+        expiration: { days: 90 },
+        transitions: [{
+            days: 30,
+            storageClass: "STANDARD_IA",
+        }],
+    }],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+lifecycle = aws.s3.BucketLifecycleConfiguration("lifecycle",
+    bucket=bucket.id,
+    rules=[aws.s3.BucketLifecycleConfigurationRuleArgs(
+        id="expire-old-logs",
+        status="Enabled",
+        filter=aws.s3.BucketLifecycleConfigurationRuleFilterArgs(prefix="logs/"),
+        expiration=aws.s3.BucketLifecycleConfigurationRuleExpirationArgs(days=90),
+        transitions=[aws.s3.BucketLifecycleConfigurationRuleTransitionArgs(
+            days=30,
+            storage_class="STANDARD_IA",
+        )],
+    )],
+)
+```
+
+</CodeGroup>
+
+### Other companion resources
+
+| Resource | Purpose |
+|---|---|
+| `aws.s3.BucketAcl` | Set a canned ACL or fine-grained grants on a bucket. |
+| `aws.s3.BucketCorsConfiguration` | Configure CORS rules for browser access. |
+| `aws.s3.BucketWebsiteConfiguration` | Enable static website hosting. |
+| `aws.s3.BucketPolicy` | Attach a resource-based IAM policy to a bucket. |
+| `aws.s3.BucketPublicAccessBlock` | Block public access settings at the bucket level. |
+| `aws.s3.BucketLogging` | Configure server access logging for a bucket. |
+
+---
+
+## aws.s3.BucketObject / aws.s3.BucketObjectv2
+
+Upload a file or inline content to a bucket. `BucketObjectv2` is the current recommended form; `BucketObject` is an older alias.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const obj = new aws.s3.BucketObjectv2("config", {
+    bucket: bucket.id,
+    key: "config/app.json",
+    source: new pulumi.asset.FileAsset("./app.json"),
+    contentType: "application/json",
+    serverSideEncryption: "AES256",
+});
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+obj = aws.s3.BucketObjectv2("config",
+    bucket=bucket.id,
+    key="config/app.json",
+    source=pulumi.FileAsset("./app.json"),
+    content_type="application/json",
+    server_side_encryption="AES256",
+)
+```
+
+</CodeGroup>
+
+---
+
+## Data sources
+
+### aws.s3.getObject
+
+Look up metadata and optionally the content of an existing S3 object.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const config = aws.s3.getObject({
+    bucket: "my-app-assets",
+    key: "config/app.json",
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+config = aws.s3.get_object(
+    bucket="my-app-assets",
+    key="config/app.json",
+)
+```
+
+</CodeGroup>
+
+### aws.s3.getBucket
+
+Look up attributes of an existing bucket.
+
+<Note>
+In v7, use the `bucketRegion` attribute of the returned object to read the bucket's region. The `region` attribute is now reserved for Enhanced Region Support.
+</Note>
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const selected = aws.s3.getBucket({ bucket: "my-existing-bucket" });
+const region = selected.then(b => b.bucketRegion);
+```
+
+```python Python
+import pulumi_aws as aws
+
+selected = aws.s3.get_bucket(bucket="my-existing-bucket")
+region = selected.bucket_region
+```
+
+</CodeGroup>
+
+---
+
+## Cross-region replication
+
+Cross-region replication (CRR) requires versioning to be enabled on both the source and destination buckets, an IAM role granting S3 replication permissions, and an `aws.s3.BucketReplicationConfig` resource.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+// Source bucket (us-east-1 — use provider default or set region input)
+const source = new aws.s3.Bucket("source", { bucket: "my-crr-source" });
+const sourceVersioning = new aws.s3.BucketVersioning("source-versioning", {
+    bucket: source.id,
+    versioningConfiguration: { status: "Enabled" },
+});
+
+// Destination bucket in a different region
+const dest = new aws.s3.Bucket("dest", {
+    bucket: "my-crr-dest",
+    region: "us-west-2",
+});
+const destVersioning = new aws.s3.BucketVersioning("dest-versioning", {
+    bucket: dest.id,
+    versioningConfiguration: { status: "Enabled" },
+});
+
+// IAM role for replication (policy document omitted for brevity)
+const replicationRole = new aws.iam.Role("replication-role", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{ Effect: "Allow", Principal: { Service: "s3.amazonaws.com" }, Action: "sts:AssumeRole" }],
+    }),
+});
+
+const replication = new aws.s3.BucketReplicationConfig("replication", {
+    bucket: source.id,
+    role: replicationRole.arn,
+    rules: [{
+        id: "replicate-all",
+        status: "Enabled",
+        destination: { bucket: dest.arn, storageClass: "STANDARD" },
+    }],
+}, { dependsOn: [sourceVersioning] });
+```
+
+```python Python
+import json
+import pulumi_aws as aws
+
+source = aws.s3.Bucket("source", bucket="my-crr-source")
+source_versioning = aws.s3.BucketVersioning("source-versioning",
+    bucket=source.id,
+    versioning_configuration=aws.s3.BucketVersioningVersioningConfigurationArgs(status="Enabled"),
+)
+
+dest = aws.s3.Bucket("dest", bucket="my-crr-dest", region="us-west-2")
+dest_versioning = aws.s3.BucketVersioning("dest-versioning",
+    bucket=dest.id,
+    versioning_configuration=aws.s3.BucketVersioningVersioningConfigurationArgs(status="Enabled"),
+)
+
+replication_role = aws.iam.Role("replication-role",
+    assume_role_policy=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Principal": {"Service": "s3.amazonaws.com"}, "Action": "sts:AssumeRole"}],
+    }),
+)
+
+replication = aws.s3.BucketReplicationConfig("replication",
+    bucket=source.id,
+    role=replication_role.arn,
+    rules=[aws.s3.BucketReplicationConfigRuleArgs(
+        id="replicate-all",
+        status="Enabled",
+        destination=aws.s3.BucketReplicationConfigRuleDestinationArgs(
+            bucket=dest.arn,
+            storage_class="STANDARD",
+        ),
+    )],
+    opts=pulumi.ResourceOptions(depends_on=[source_versioning]),
+)
+```
+
+</CodeGroup>
+
+<Tip>
+For the destination bucket to accept replicated objects from a different account, attach a bucket policy granting the source account's replication role `s3:ReplicateObject` permission.
+</Tip>

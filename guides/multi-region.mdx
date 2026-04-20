@@ -1,0 +1,387 @@
+---
+title: "Deploy AWS resources across multiple regions"
+description: "Use Pulumi AWS Provider v7's per-resource region property to manage infrastructure in multiple AWS regions without extra provider configs."
+---
+
+Before v7, deploying to multiple AWS regions required a separate `aws.Provider` instance for every region you needed to target. Provider v7 introduces a top-level `region` property on most resources, so you can manage infrastructure in multiple regions using a single provider configuration.
+
+## Before v7: one provider per region
+
+The pre-v7 pattern creates an explicit `aws.Provider` for each additional region. Every resource that should live in that region must pass the provider through the `provider` resource option.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Default provider for us-east-1
+const awsProvider = new aws.Provider("aws", {
+    region: "us-east-1",
+});
+
+// Separate provider for us-west-2
+const awsPeerProvider = new aws.Provider("aws-peer", {
+    region: "us-west-2",
+});
+
+const main = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+}, { provider: awsProvider });
+
+const peer = new aws.ec2.Vpc("peer", {
+    cidrBlock: "10.1.0.0/16",
+}, { provider: awsPeerProvider });  // explicitly routed to the second provider
+```
+
+This approach scales poorly: 36 AWS regions means up to 36 provider objects, each adding memory and compute overhead.
+
+## v7+: per-resource `region` property
+
+As of v7.0.0, most resources accept a top-level `region` argument. Set it on individual resources to override the provider's default region — no extra provider needed.
+
+<Note>
+Pre-v7 configurations that use multiple provider instances remain valid in v7 and are **not deprecated**. Migrate at your own pace.
+</Note>
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Single provider for the partition default region
+const awsProvider = new aws.Provider("aws", {
+    region: "us-east-1",
+});
+
+// This VPC lives in us-east-1 (the provider default)
+const main = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+}, { provider: awsProvider });
+
+// This VPC lives in us-west-2 — no extra provider required
+const peer = new aws.ec2.Vpc("peer", {
+    region: "us-west-2",
+    cidrBlock: "10.1.0.0/16",
+}, { provider: awsProvider });
+```
+
+<Warning>
+Changing a resource's `region` value forces replacement. Pulumi will destroy the resource in the old region and create a new one in the new region. Plan carefully before modifying this property on existing resources.
+</Warning>
+
+## Cross-region VPC peering
+
+The before/after comparison below shows how the same cross-region peering configuration is expressed with and without v7's per-resource region.
+
+<Tabs>
+  <Tab title="v7+">
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const awsProvider = new aws.Provider("aws", {
+        region: "us-east-1",
+    });
+
+    const main = new aws.ec2.Vpc("main", {
+        cidrBlock: "10.0.0.0/16",
+    }, { provider: awsProvider });
+
+    // Peer VPC in us-west-2 — single provider, per-resource region
+    const peer = new aws.ec2.Vpc("peer", {
+        region: "us-west-2",
+        cidrBlock: "10.1.0.0/16",
+    }, { provider: awsProvider });
+
+    // Requester's side (us-east-1)
+    const peerConnection = new aws.ec2.VpcPeeringConnection("peer", {
+        vpcId: main.id,
+        peerVpcId: peer.id,
+        peerRegion: "us-west-2",
+        autoAccept: false,
+    }, { provider: awsProvider });
+
+    // Accepter's side (us-west-2) — region set on the resource
+    const peerAccepter = new aws.ec2.VpcPeeringConnectionAccepter("peerAccepter", {
+        region: "us-west-2",
+        vpcPeeringConnectionId: peerConnection.id,
+        autoAccept: true,
+    }, { provider: awsProvider });
+    ```
+
+  </Tab>
+  <Tab title="Pre-v7">
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const awsProvider = new aws.Provider("aws", {
+        region: "us-east-1",
+    });
+
+    const awsPeerProvider = new aws.Provider("aws-peer", {
+        region: "us-west-2",
+    });
+
+    const main = new aws.ec2.Vpc("main", {
+        cidrBlock: "10.0.0.0/16",
+    }, { provider: awsProvider });
+
+    const peer = new aws.ec2.Vpc("peer", {
+        cidrBlock: "10.1.0.0/16",
+    }, { provider: awsPeerProvider });
+
+    const peerIdentity = aws.getCallerIdentity({}, { provider: awsPeerProvider });
+
+    const peerConnection = new aws.ec2.VpcPeeringConnection("peer", {
+        vpcId: main.id,
+        peerVpcId: peer.id,
+        peerOwnerId: peerIdentity.then(id => id.accountId),
+        peerRegion: "us-west-2",
+        autoAccept: false,
+    }, { provider: awsProvider });
+
+    const peerAccepter = new aws.ec2.VpcPeeringConnectionAccepter("peerAccepter", {
+        vpcPeeringConnectionId: peerConnection.id,
+        autoAccept: true,
+    }, { provider: awsPeerProvider });
+    ```
+
+  </Tab>
+</Tabs>
+
+## KMS replica key
+
+Create a multi-region primary key in `us-east-1` and its replica in `us-west-2` using a single provider.
+
+<Tabs>
+  <Tab title="v7+">
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const awsProvider = new aws.Provider("aws", {
+        region: "us-west-2",
+    });
+
+    // Primary key in us-east-1 — override via per-resource region
+    const primary = new aws.kms.Key("primary", {
+        region: "us-east-1",
+        description: "Multi-Region primary key",
+        deletionWindowInDays: 30,
+        multiRegion: true,
+    }, { provider: awsProvider });
+
+    // Replica key in us-west-2 (the provider default)
+    const replica = new aws.kms.ReplicaKey("replica", {
+        description: "Multi-Region replica key",
+        deletionWindowInDays: 7,
+        primaryKeyArn: primary.arn,
+    }, { provider: awsProvider });
+    ```
+
+  </Tab>
+  <Tab title="Pre-v7">
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const awsPrimaryProvider = new aws.Provider("aws-primary", {
+        region: "us-east-1",
+    });
+
+    const awsProvider = new aws.Provider("aws", {
+        region: "us-west-2",
+    });
+
+    const primary = new aws.kms.Key("primary", {
+        description: "Multi-Region primary key",
+        deletionWindowInDays: 30,
+        multiRegion: true,
+    }, { provider: awsPrimaryProvider });
+
+    const replica = new aws.kms.ReplicaKey("replica", {
+        description: "Multi-Region replica key",
+        deletionWindowInDays: 7,
+        primaryKeyArn: primary.arn,
+    }, { provider: awsProvider });
+    ```
+
+  </Tab>
+</Tabs>
+
+## S3 cross-region replication
+
+Replicate objects from a source bucket in `eu-central-1` to a destination in `eu-west-1`. With v7, both buckets share a single provider; the source bucket and its related resources declare `region: "eu-central-1"` directly.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+const awsProvider = new aws.Provider("aws", {
+    region: "eu-west-1",
+});
+
+const assumeRoleDocument = aws.iam.getPolicyDocument({
+    statements: [{
+        effect: "Allow",
+        principals: [{
+            type: "Service",
+            identifiers: ["s3.amazonaws.com"],
+        }],
+        actions: ["sts:AssumeRole"],
+    }],
+});
+
+const replicationRole = new aws.iam.Role("replication", {
+    assumeRolePolicy: assumeRoleDocument.then(doc => doc.json),
+}, { provider: awsProvider });
+
+// Destination bucket — eu-west-1 (provider default)
+const destination = new aws.s3.Bucket("destination", {},
+    { provider: awsProvider });
+
+// Source bucket — eu-central-1 via per-resource region
+const source = new aws.s3.Bucket("source", {
+    region: "eu-central-1",
+}, { provider: awsProvider });
+
+const replicationPolicyDocument = aws.iam.getPolicyDocument({
+    statements: [
+        {
+            effect: "Allow",
+            actions: ["s3:GetReplicationConfiguration", "s3:ListBucket"],
+            resources: [source.arn],
+        },
+        {
+            effect: "Allow",
+            actions: [
+                "s3:GetObjectVersionForReplication",
+                "s3:GetObjectVersionAcl",
+                "s3:GetObjectVersionTagging",
+            ],
+            resources: [source.arn.apply(arn => `${arn}/*`)],
+        },
+        {
+            effect: "Allow",
+            actions: ["s3:ReplicateObject", "s3:ReplicateDelete", "s3:ReplicateTags"],
+            resources: [destination.arn.apply(arn => `${arn}/*`)],
+        },
+    ],
+});
+
+const replicationPolicy = new aws.iam.Policy("replication", {
+    policy: replicationPolicyDocument.then(doc => doc.json),
+}, { provider: awsProvider });
+
+new aws.iam.RolePolicyAttachment("replication", {
+    role: replicationRole.name,
+    policyArn: replicationPolicy.arn,
+}, { provider: awsProvider });
+
+const destinationVersioning = new aws.s3.BucketVersioning("destination", {
+    bucket: destination.id,
+    versioningConfiguration: { status: "Enabled" },
+}, { provider: awsProvider });
+
+const sourceVersioning = new aws.s3.BucketVersioning("source", {
+    region: "eu-central-1",
+    bucket: source.id,
+    versioningConfiguration: { status: "Enabled" },
+}, { provider: awsProvider });
+
+const replication = new aws.s3.BucketReplicationConfig("replication", {
+    region: "eu-central-1",
+    dependsOn: [sourceVersioning],
+    role: replicationRole.arn,
+    bucket: source.id,
+    rules: [{
+        id: "replicate-all",
+        filter: { prefix: "" },
+        status: "Enabled",
+        destination: {
+            bucket: destination.arn,
+            storageClass: "STANDARD",
+        },
+    }],
+}, { provider: awsProvider });
+```
+
+## Importing resources in a specific region
+
+When importing an existing resource that lives in a specific region, append `@<region>` to the import ID:
+
+```bash
+pulumi import aws:ec2/vpc:Vpc my_vpc vpc-a01106c2@eu-west-1
+```
+
+Without the `@<region>` suffix, the provider uses the default region from its configuration, which may not match the resource's actual location.
+
+## Resources that are NOT region-aware
+
+Not every resource has a `region` property. Global AWS services are inherently region-independent; adding `region` to them would not make sense.
+
+<AccordionGroup>
+  <Accordion title="Fully global services">
+    All resources for these services are global and do not accept a `region` property:
+
+    - **IAM** (`aws.iam.*`, `aws.rolesanywhere.*`, `aws.getCallerIdentity`)
+    - **CloudFront** (`aws.cloudfront.*`, `aws.cloudfrontkeyvaluestore.*`)
+    - **Route 53** (`aws.route53.*`, `aws.route53domains.*`)
+    - **Organizations** (`aws.organizations.*`)
+    - **Global Accelerator** (`aws.globalaccelerator.*`)
+    - **WAF Classic** (`aws.waf.*`)
+    - **Shield Advanced** (`aws.shield.*`)
+    - **Budgets** (`aws.budgets.*`)
+    - **Cost Explorer** (`aws.ce.*`)
+    - **Account Management** (`aws.billing.*`, `aws.bcmdataexports.*`)
+    - **Network Manager** (`aws.networkmanager.*`)
+    - **Price List** (`aws.pricing.*`)
+  </Accordion>
+  <Accordion title="Global resources in regional services">
+    Some regional services include individual global resources:
+
+    | Service | Resource |
+    |---|---|
+    | Backup | `aws.backup.GlobalSettings` |
+    | EC2 | `aws.ec2.ImageBlockPublicAccess` |
+    | Direct Connect | `aws.directconnect.Gateway` |
+    | S3 | `aws.s3.AccountPublicAccessBlock`, `aws.s3.getCanonicalUserId` |
+    | Firewall Manager | `aws.fms.AdminAccount` |
+  </Accordion>
+  <Accordion title="Resources deprecating region">
+    The following resources had a `region` before v7. That field is now deprecated and will be replaced in a future version:
+
+    - `aws.cloudformation.StackSetInstance`
+    - `aws.config.AggregateAuthorization`
+    - `aws.directconnect.HostedConnection`
+    - `aws.getRegion`
+    - `aws.s3.getBucket`
+    - `aws.servicequotas.Template`
+    - `aws.ssmincidents.ReplicationSet`
+    - `aws.ec2.getVpcEndpointService`
+    - `aws.ec2.getVpcPeeringConnection`
+  </Accordion>
+</AccordionGroup>
+
+## Migrating from multiple providers to per-resource region
+
+<Steps>
+  <Step title="Upgrade to v7">
+    Follow the v7 upgrade guide to update your `@pulumi/aws` package and resolve any breaking changes.
+  </Step>
+  <Step title="Replace provider options with region arguments">
+    For each resource that previously used `{ provider: regionProvider }`, remove the provider option and add `region: "us-west-2"` (or whichever region applies) directly to the resource arguments.
+  </Step>
+  <Step title="Run pulumi up with refresh">
+    Run `pulumi up --refresh` to reconcile Pulumi state with the live infrastructure before applying changes.
+
+    ```bash
+    pulumi up --refresh
+    ```
+  </Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Enhanced region support" icon="book" href="https://github.com/pulumi/pulumi-aws/blob/master/docs/enhanced-region-support.md">
+    The authoritative source document for per-resource region behavior.
+  </Card>
+  <Card title="v7 upgrade guide" icon="wrench" href="https://www.pulumi.com/registry/packages/aws/how-to-guides/version-7-migration-guide/">
+    Step-by-step instructions for upgrading from v6 to v7.
+  </Card>
+</CardGroup>

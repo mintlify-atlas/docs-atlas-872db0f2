@@ -1,0 +1,764 @@
+---
+title: "aws.ec2 — EC2 instances, VPCs, and compute resources"
+description: "Reference for the aws.ec2 module: create EC2 instances, manage AMIs, configure security groups, launch templates, and Elastic IPs."
+---
+
+The `aws.ec2` module covers the full breadth of Amazon EC2: virtual machines, networking primitives (VPCs, subnets, security groups), key pairs, Elastic IPs, and launch templates. Together these resources let you define reproducible, version-controlled compute infrastructure from a single Pulumi program.
+
+---
+
+## aws.ec2.Instance
+
+Provisions an EC2 virtual machine. The `ami` and `instanceType` fields are always required; all other fields depend on your network topology.
+
+<Note>
+In v7, `userData` is stored as plain text and is no longer hashed. Do not embed passwords or secrets in user data. Use `userDataBase64` if you need to pass pre-encoded content.
+</Note>
+
+### Key inputs
+
+<ParamField path="ami" type="string" required>
+  The AMI ID to launch. Accepts a literal AMI ID or an SSM parameter path such as `resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64`.
+</ParamField>
+
+<ParamField path="instanceType" type="string | InstanceType" required>
+  The instance type. Use the `aws.ec2.InstanceType` enum (e.g., `aws.ec2.InstanceType.T3_Micro`) or a plain string such as `"t3.micro"`.
+</ParamField>
+
+<ParamField path="subnetId" type="string">
+  The subnet in which to launch the instance. Required when placing an instance in a non-default VPC.
+</ParamField>
+
+<ParamField path="vpcSecurityGroupIds" type="string[]">
+  List of security group IDs to attach. Use this instead of `securityGroups` when working in a VPC.
+</ParamField>
+
+<ParamField path="userData" type="string">
+  Plain-text user data script executed at first boot.
+</ParamField>
+
+<ParamField path="keyName" type="string">
+  Name of the key pair to associate with the instance for SSH access.
+</ParamField>
+
+<ParamField path="tags" type="Record<string, string>">
+  Key-value tags applied to the instance. The `Name` tag controls the display name in the console.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Look up the latest Amazon Linux 2023 AMI
+const ami = aws.ec2.getAmi({
+    mostRecent: true,
+    owners: ["amazon"],
+    filters: [
+        { name: "name", values: ["al2023-ami-2023*-x86_64"] },
+        { name: "virtualization-type", values: ["hvm"] },
+    ],
+});
+
+// Security group allowing SSH and HTTP
+const sg = new aws.ec2.SecurityGroup("web-sg", {
+    description: "Allow SSH and HTTP",
+    ingress: [
+        { protocol: "tcp", fromPort: 22, toPort: 22, cidrBlocks: ["0.0.0.0/0"] },
+        { protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"] },
+    ],
+    egress: [
+        { protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] },
+    ],
+});
+
+const server = new aws.ec2.Instance("web", {
+    ami: ami.then(a => a.id),
+    instanceType: aws.ec2.InstanceType.T3_Micro,
+    vpcSecurityGroupIds: [sg.id],
+    userData: `#!/bin/bash
+yum install -y httpd
+systemctl start httpd`,
+    tags: { Name: "web-server" },
+});
+
+export const publicIp = server.publicIp;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+ami = aws.ec2.get_ami(
+    most_recent=True,
+    owners=["amazon"],
+    filters=[
+        aws.ec2.GetAmiFilterArgs(name="name", values=["al2023-ami-2023*-x86_64"]),
+        aws.ec2.GetAmiFilterArgs(name="virtualization-type", values=["hvm"]),
+    ],
+)
+
+sg = aws.ec2.SecurityGroup(
+    "web-sg",
+    description="Allow SSH and HTTP",
+    ingress=[
+        aws.ec2.SecurityGroupIngressArgs(
+            protocol="tcp", from_port=22, to_port=22, cidr_blocks=["0.0.0.0/0"]
+        ),
+        aws.ec2.SecurityGroupIngressArgs(
+            protocol="tcp", from_port=80, to_port=80, cidr_blocks=["0.0.0.0/0"]
+        ),
+    ],
+    egress=[
+        aws.ec2.SecurityGroupEgressArgs(
+            protocol="-1", from_port=0, to_port=0, cidr_blocks=["0.0.0.0/0"]
+        )
+    ],
+)
+
+server = aws.ec2.Instance(
+    "web",
+    ami=ami.id,
+    instance_type=aws.ec2.InstanceType.T3_MICRO,
+    vpc_security_group_ids=[sg.id],
+    user_data="#!/bin/bash\nyum install -y httpd\nsystemctl start httpd",
+    tags={"Name": "web-server"},
+)
+
+pulumi.export("public_ip", server.public_ip)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.Vpc
+
+Creates a Virtual Private Cloud. Every other networking resource—subnets, security groups, route tables—belongs to a VPC.
+
+### Key inputs
+
+<ParamField path="cidrBlock" type="string" required>
+  The IPv4 CIDR block for the VPC (e.g., `"10.0.0.0/16"`).
+</ParamField>
+
+<ParamField path="enableDnsHostnames" type="boolean">
+  Assign public DNS hostnames to instances with public IPs. Required when using AWS service endpoints by DNS name.
+</ParamField>
+
+<ParamField path="enableDnsSupport" type="boolean">
+  Enable the Amazon-provided DNS resolver. Defaults to `true`.
+</ParamField>
+
+<ParamField path="tags" type="Record<string, string>">
+  Tags applied to the VPC.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+    enableDnsHostnames: true,
+    enableDnsSupport: true,
+    tags: { Name: "main-vpc" },
+});
+
+export const vpcId = vpc.id;
+```
+
+```python Python
+import pulumi_aws as aws
+
+vpc = aws.ec2.Vpc(
+    "main",
+    cidr_block="10.0.0.0/16",
+    enable_dns_hostnames=True,
+    enable_dns_support=True,
+    tags={"Name": "main-vpc"},
+)
+
+pulumi.export("vpc_id", vpc.id)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.Subnet
+
+Carves a CIDR range within a VPC and associates it with an availability zone.
+
+### Key inputs
+
+<ParamField path="vpcId" type="string" required>
+  The ID of the parent VPC.
+</ParamField>
+
+<ParamField path="cidrBlock" type="string" required>
+  The IPv4 CIDR block for the subnet. Must be a subset of the VPC CIDR.
+</ParamField>
+
+<ParamField path="availabilityZone" type="string">
+  The AZ in which to place the subnet (e.g., `"us-east-1a"`).
+</ParamField>
+
+<ParamField path="mapPublicIpOnLaunch" type="boolean">
+  Automatically assign public IPs to instances launched in this subnet. Suitable for public-facing subnets.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const publicSubnet = new aws.ec2.Subnet("public", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.1.0/24",
+    availabilityZone: "us-east-1a",
+    mapPublicIpOnLaunch: true,
+    tags: { Name: "public-subnet" },
+});
+
+const privateSubnet = new aws.ec2.Subnet("private", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.2.0/24",
+    availabilityZone: "us-east-1b",
+    tags: { Name: "private-subnet" },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+public_subnet = aws.ec2.Subnet(
+    "public",
+    vpc_id=vpc.id,
+    cidr_block="10.0.1.0/24",
+    availability_zone="us-east-1a",
+    map_public_ip_on_launch=True,
+    tags={"Name": "public-subnet"},
+)
+
+private_subnet = aws.ec2.Subnet(
+    "private",
+    vpc_id=vpc.id,
+    cidr_block="10.0.2.0/24",
+    availability_zone="us-east-1b",
+    tags={"Name": "private-subnet"},
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.SecurityGroup and aws.ec2.SecurityGroupRule
+
+A security group acts as a stateful firewall for EC2 instances. The recommended pattern is to define the group with `aws.ec2.SecurityGroup` and add individual rules with `aws.vpc.SecurityGroupIngressRule` / `aws.vpc.SecurityGroupEgressRule` (one CIDR per rule resource).
+
+<Warning>
+Do not mix inline `ingress`/`egress` blocks on `aws.ec2.SecurityGroup` with separate `aws.vpc.SecurityGroupIngressRule` or `aws.ec2.SecurityGroupRule` resources on the same group. Doing so causes rule conflicts and perpetual diffs.
+</Warning>
+
+### Key inputs — aws.ec2.SecurityGroup
+
+<ParamField path="name" type="string">
+  The security group name. Changing this forces a new resource.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-readable description. Changing this forces a new resource.
+</ParamField>
+
+<ParamField path="vpcId" type="string">
+  The VPC in which to create the security group.
+</ParamField>
+
+### Example (preferred: separate rule resources)
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const sg = new aws.ec2.SecurityGroup("app-sg", {
+    name: "app-sg",
+    description: "Application security group",
+    vpcId: vpc.id,
+    tags: { Name: "app-sg" },
+});
+
+// Ingress rule — allow HTTPS from anywhere
+const httpsIngress = new aws.vpc.SecurityGroupIngressRule("https", {
+    securityGroupId: sg.id,
+    cidrIpv4: "0.0.0.0/0",
+    fromPort: 443,
+    toPort: 443,
+    ipProtocol: "tcp",
+});
+
+// Egress rule — allow all outbound
+const allEgress = new aws.vpc.SecurityGroupEgressRule("all-out", {
+    securityGroupId: sg.id,
+    cidrIpv4: "0.0.0.0/0",
+    ipProtocol: "-1",
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+sg = aws.ec2.SecurityGroup(
+    "app-sg",
+    name="app-sg",
+    description="Application security group",
+    vpc_id=vpc.id,
+    tags={"Name": "app-sg"},
+)
+
+https_ingress = aws.vpc.SecurityGroupIngressRule(
+    "https",
+    security_group_id=sg.id,
+    cidr_ipv4="0.0.0.0/0",
+    from_port=443,
+    to_port=443,
+    ip_protocol="tcp",
+)
+
+all_egress = aws.vpc.SecurityGroupEgressRule(
+    "all-out",
+    security_group_id=sg.id,
+    cidr_ipv4="0.0.0.0/0",
+    ip_protocol="-1",
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.Eip
+
+Allocates a static Elastic IP address in a VPC.
+
+<Warning>
+In v7, the `vpc` argument has been removed. Use `domain: "vpc"` instead.
+</Warning>
+
+### Key inputs
+
+<ParamField path="domain" type="string">
+  Set to `"vpc"` to allocate an EIP for use in a VPC (required for all modern usage).
+</ParamField>
+
+<ParamField path="instance" type="string">
+  The instance ID to associate the EIP with.
+</ParamField>
+
+<ParamField path="networkInterface" type="string">
+  The network interface ID to associate with.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const eip = new aws.ec2.Eip("app-ip", {
+    domain: "vpc",
+    instance: server.id,
+}, { dependsOn: [internetGateway] });
+
+export const staticIp = eip.publicIp;
+```
+
+```python Python
+import pulumi_aws as aws
+
+eip = aws.ec2.Eip(
+    "app-ip",
+    domain="vpc",
+    instance=server.id,
+    opts=pulumi.ResourceOptions(depends_on=[internet_gateway]),
+)
+
+pulumi.export("static_ip", eip.public_ip)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.KeyPair
+
+Registers an SSH public key with AWS so it can be associated with EC2 instances.
+
+### Key inputs
+
+<ParamField path="keyName" type="string">
+  The name to assign to the key pair in AWS.
+</ParamField>
+
+<ParamField path="publicKey" type="string" required>
+  The public key material in OpenSSH, base64-encoded DER, or RFC 4716 format.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const keyPair = new aws.ec2.KeyPair("deployer", {
+    keyName: "deployer-key",
+    publicKey: "ssh-rsa AAAAB3NzaC1yc2E... user@host",
+});
+
+const server = new aws.ec2.Instance("web", {
+    ami: ami.then(a => a.id),
+    instanceType: aws.ec2.InstanceType.T3_Micro,
+    keyName: keyPair.keyName,
+    vpcSecurityGroupIds: [sg.id],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+key_pair = aws.ec2.KeyPair(
+    "deployer",
+    key_name="deployer-key",
+    public_key="ssh-rsa AAAAB3NzaC1yc2E... user@host",
+)
+
+server = aws.ec2.Instance(
+    "web",
+    ami=ami.id,
+    instance_type=aws.ec2.InstanceType.T3_MICRO,
+    key_name=key_pair.key_name,
+    vpc_security_group_ids=[sg.id],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.LaunchTemplate
+
+Defines a reusable instance configuration used by Auto Scaling groups, EC2 Fleet, and spot requests.
+
+### Key inputs
+
+<ParamField path="name" type="string">
+  The launch template name.
+</ParamField>
+
+<ParamField path="imageId" type="string">
+  The AMI ID (equivalent to `ami` on `Instance`).
+</ParamField>
+
+<ParamField path="instanceType" type="string">
+  The instance type.
+</ParamField>
+
+<ParamField path="keyName" type="string">
+  The key pair name for SSH access.
+</ParamField>
+
+<ParamField path="vpcSecurityGroupIds" type="string[]">
+  Security group IDs to attach.
+</ParamField>
+
+<ParamField path="userData" type="string">
+  Base64-encoded user data script.
+</ParamField>
+
+<ParamField path="iamInstanceProfile" type="object">
+  IAM instance profile to associate. Accepts `{ arn }` or `{ name }`.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+import * as pulumi from "@pulumi/pulumi";
+
+const lt = new aws.ec2.LaunchTemplate("app-lt", {
+    name: "app-launch-template",
+    imageId: ami.then(a => a.id),
+    instanceType: "t3.micro",
+    keyName: keyPair.keyName,
+    vpcSecurityGroupIds: [sg.id],
+    userData: Buffer.from("#!/bin/bash\nyum install -y httpd").toString("base64"),
+    tagSpecifications: [{
+        resourceType: "instance",
+        tags: { Name: "app-from-lt" },
+    }],
+});
+```
+
+```python Python
+import base64
+import pulumi_aws as aws
+
+lt = aws.ec2.LaunchTemplate(
+    "app-lt",
+    name="app-launch-template",
+    image_id=ami.id,
+    instance_type="t3.micro",
+    key_name=key_pair.key_name,
+    vpc_security_group_ids=[sg.id],
+    user_data=base64.b64encode(b"#!/bin/bash\nyum install -y httpd").decode(),
+    tag_specifications=[
+        aws.ec2.LaunchTemplateTagSpecificationArgs(
+            resource_type="instance",
+            tags={"Name": "app-from-lt"},
+        )
+    ],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ec2.getAmi
+
+Looks up a registered AMI by owner and filters. Returns the matching AMI's attributes.
+
+<Note>
+In v7, the `owners` field is required. Omitting it raises a validation error. Always specify an owner account ID, `"amazon"`, `"self"`, or another alias to avoid accidentally picking up third-party AMIs.
+</Note>
+
+### Key arguments
+
+<ParamField path="owners" type="string[]" required>
+  Limit results to AMIs owned by these principals (`"amazon"`, `"self"`, or an account ID).
+</ParamField>
+
+<ParamField path="filters" type="GetAmiFilter[]" required>
+  One or more name/value filter pairs. Common filter names: `name`, `architecture`, `virtualization-type`, `root-device-type`.
+</ParamField>
+
+<ParamField path="mostRecent" type="boolean">
+  When multiple AMIs match, return the most recently created one.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const ubuntu = aws.ec2.getAmi({
+    mostRecent: true,
+    owners: ["099720109477"], // Canonical
+    filters: [
+        { name: "name", values: ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"] },
+        { name: "virtualization-type", values: ["hvm"] },
+    ],
+});
+
+const server = new aws.ec2.Instance("app", {
+    ami: ubuntu.then(a => a.id),
+    instanceType: aws.ec2.InstanceType.T3_Micro,
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+ubuntu = aws.ec2.get_ami(
+    most_recent=True,
+    owners=["099720109477"],
+    filters=[
+        aws.ec2.GetAmiFilterArgs(
+            name="name",
+            values=["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"],
+        ),
+        aws.ec2.GetAmiFilterArgs(name="virtualization-type", values=["hvm"]),
+    ],
+)
+
+server = aws.ec2.Instance(
+    "app",
+    ami=ubuntu.id,
+    instance_type=aws.ec2.InstanceType.T3_MICRO,
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.getAvailabilityZones
+
+Returns the list of availability zones available in the current region.
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const azs = aws.getAvailabilityZones({ state: "available" });
+
+// Use the first two AZs
+const subnetA = new aws.ec2.Subnet("subnet-a", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.1.0/24",
+    availabilityZone: azs.then(z => z.names[0]),
+});
+
+const subnetB = new aws.ec2.Subnet("subnet-b", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.2.0/24",
+    availabilityZone: azs.then(z => z.names[1]),
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+azs = aws.get_availability_zones(state="available")
+
+subnet_a = aws.ec2.Subnet(
+    "subnet-a",
+    vpc_id=vpc.id,
+    cidr_block="10.0.1.0/24",
+    availability_zone=azs.names[0],
+)
+
+subnet_b = aws.ec2.Subnet(
+    "subnet-b",
+    vpc_id=vpc.id,
+    cidr_block="10.0.2.0/24",
+    availability_zone=azs.names[1],
+)
+```
+
+</CodeGroup>
+
+---
+
+## Complete VPC + instance example
+
+The following program creates a VPC, public subnet, internet gateway, security group, and a web server instance end-to-end.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+    enableDnsHostnames: true,
+    tags: { Name: "main" },
+});
+
+const igw = new aws.ec2.InternetGateway("igw", { vpcId: vpc.id });
+
+const subnet = new aws.ec2.Subnet("public", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.1.0/24",
+    mapPublicIpOnLaunch: true,
+    availabilityZone: "us-east-1a",
+});
+
+const sg = new aws.ec2.SecurityGroup("web-sg", {
+    vpcId: vpc.id,
+    description: "Allow HTTP",
+    ingress: [{ protocol: "tcp", fromPort: 80, toPort: 80, cidrBlocks: ["0.0.0.0/0"] }],
+    egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
+});
+
+const ami = aws.ec2.getAmi({
+    mostRecent: true,
+    owners: ["amazon"],
+    filters: [{ name: "name", values: ["al2023-ami-2023*-x86_64"] }],
+});
+
+const server = new aws.ec2.Instance("web", {
+    ami: ami.then(a => a.id),
+    instanceType: aws.ec2.InstanceType.T3_Micro,
+    subnetId: subnet.id,
+    vpcSecurityGroupIds: [sg.id],
+    userData: "#!/bin/bash\nyum install -y httpd && systemctl start httpd",
+    tags: { Name: "web-server" },
+}, { dependsOn: [igw] });
+
+export const publicIp = server.publicIp;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+vpc = aws.ec2.Vpc(
+    "main",
+    cidr_block="10.0.0.0/16",
+    enable_dns_hostnames=True,
+    tags={"Name": "main"},
+)
+
+igw = aws.ec2.InternetGateway("igw", vpc_id=vpc.id)
+
+subnet = aws.ec2.Subnet(
+    "public",
+    vpc_id=vpc.id,
+    cidr_block="10.0.1.0/24",
+    map_public_ip_on_launch=True,
+    availability_zone="us-east-1a",
+)
+
+sg = aws.ec2.SecurityGroup(
+    "web-sg",
+    vpc_id=vpc.id,
+    description="Allow HTTP",
+    ingress=[aws.ec2.SecurityGroupIngressArgs(
+        protocol="tcp", from_port=80, to_port=80, cidr_blocks=["0.0.0.0/0"]
+    )],
+    egress=[aws.ec2.SecurityGroupEgressArgs(
+        protocol="-1", from_port=0, to_port=0, cidr_blocks=["0.0.0.0/0"]
+    )],
+)
+
+ami = aws.ec2.get_ami(
+    most_recent=True,
+    owners=["amazon"],
+    filters=[aws.ec2.GetAmiFilterArgs(name="name", values=["al2023-ami-2023*-x86_64"])],
+)
+
+server = aws.ec2.Instance(
+    "web",
+    ami=ami.id,
+    instance_type=aws.ec2.InstanceType.T3_MICRO,
+    subnet_id=subnet.id,
+    vpc_security_group_ids=[sg.id],
+    user_data="#!/bin/bash\nyum install -y httpd && systemctl start httpd",
+    tags={"Name": "web-server"},
+    opts=pulumi.ResourceOptions(depends_on=[igw]),
+)
+
+pulumi.export("public_ip", server.public_ip)
+```
+
+</CodeGroup>

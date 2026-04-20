@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "Pulumi AWS Provider",
+  "projectType": "sdk-library",
+  "projectName": "Pulumi AWS Provider",
+  "projectDescription": "A multi-language Pulumi resource provider for Amazon Web Services (AWS), enabling infrastructure-as-code across TypeScript, Python, Go, .NET, and Java.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#040404",
-    "light": "#f4bf2e",
-    "dark": "#f4e6de"
-  },
-  "favicon": "https://media.brand.dev/dde197f4-e61d-4545-8f0a-b1418713a910.jpg",
-  "logo": {
-    "light": "https://media.brand.dev/b32ed8e0-3593-452d-9d78-c8eeb6c02d40.svg",
-    "dark": "https://media.brand.dev/b32ed8e0-3593-452d-9d78-c8eeb6c02d40.svg"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/pulumi/pulumi-aws"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/pulumi/pulumi-aws"
-    }
-  },
+  "primaryColor": "#040404",
+  "lightColor": "#f4bf2e",
+  "darkColor": "#f4e6de",
   "navigation": {
     "tabs": [
       {
@@ -104,5 +87,41 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Multi-language SDK support (TypeScript, Python, Go, .NET, Java, YAML)",
+    "Complete coverage of AWS services and resources",
+    "Enhanced multi-region support — manage resources across regions without multiple provider configs",
+    "Serverless functions via aws.lambda.CallbackFunction for native code-to-Lambda conversion",
+    "IAM role chaining and OIDC/WebIdentity authentication",
+    "Default tags propagation across all resources",
+    "Pulumi ESC integration for dynamic credential management",
+    "Type-safe resource definitions with full AWS API coverage"
+  ],
+  "publicApiSurface": [
+    "aws.Provider",
+    "aws.s3.Bucket",
+    "aws.ec2.Instance",
+    "aws.ec2.Vpc",
+    "aws.lambda.Function",
+    "aws.lambda.CallbackFunction",
+    "aws.ecs.Cluster",
+    "aws.ecs.TaskDefinition",
+    "aws.eks.Cluster",
+    "aws.rds.Instance",
+    "aws.dynamodb.Table",
+    "aws.iam.Role",
+    "aws.iam.Policy",
+    "aws.iam.getPolicyDocument",
+    "aws.kms.Key",
+    "aws.route53.Record",
+    "aws.apigateway.RestApi",
+    "aws.apigatewayv2.Api",
+    "aws.sqs.Queue",
+    "aws.sns.Topic",
+    "aws.cloudwatch.MetricAlarm",
+    "aws.getCallerIdentity",
+    "aws.getAvailabilityZones",
+    "aws.getRegion"
+  ]
 }

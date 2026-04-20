@@ -1,0 +1,324 @@
+---
+title: "Manage IAM roles, policies, and security with Pulumi"
+description: "Create IAM roles, attach managed and inline policies, use getPolicyDocument for type-safe policy JSON, and configure cross-account access."
+---
+
+IAM is the authorization layer for every AWS API call your infrastructure makes. The Pulumi AWS Provider exposes typed, composable APIs for roles, policies, and trust relationships — so you can write policy documents as structured data rather than hand-crafting JSON strings.
+
+## IAM roles with assumeRolePolicy
+
+An IAM role consists of a trust policy (who can assume it) and one or more permission policies (what the role can do). The helper `aws.iam.assumeRolePolicyForPrincipal` generates the trust document for common cases.
+
+<CodeGroup>
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Lambda execution role using the trust policy helper
+const lambdaRole = new aws.iam.Role("lambdaRole", {
+    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+        Service: "lambda.amazonaws.com",
+    }),
+    tags: { ManagedBy: "pulumi" },
+});
+```
+
+```python __main__.py
+import pulumi_aws as aws
+
+lambda_role = aws.iam.Role("lambdaRole",
+    assume_role_policy=aws.iam.get_policy_document(
+        statements=[aws.iam.GetPolicyDocumentStatementArgs(
+            effect="Allow",
+            principals=[aws.iam.GetPolicyDocumentStatementPrincipalArgs(
+                type="Service",
+                identifiers=["lambda.amazonaws.com"],
+            )],
+            actions=["sts:AssumeRole"],
+        )],
+    ).json,
+)
+```
+
+</CodeGroup>
+
+## Inline policy documents with getPolicyDocument
+
+`aws.iam.getPolicyDocument` constructs a well-formed IAM policy JSON from typed inputs. It catches structural mistakes at compile time (TypeScript) or deployment time (Python/Go), unlike raw JSON strings.
+
+<CodeGroup>
+
+```typescript index.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const account = aws.getCallerIdentityOutput().accountId;
+const bucket = new aws.s3.Bucket("data");
+
+const policyDoc = aws.iam.getPolicyDocumentOutput({
+    statements: [
+        {
+            sid: "AllowS3Read",
+            effect: "Allow",
+            actions: ["s3:GetObject", "s3:ListBucket"],
+            resources: [
+                bucket.arn,
+                pulumi.interpolate`${bucket.arn}/*`,
+            ],
+        },
+        {
+            sid: "DenyDeleteUnlessAdmin",
+            effect: "Deny",
+            actions: ["s3:DeleteObject", "s3:DeleteBucket"],
+            resources: ["*"],
+            conditions: [{
+                test: "StringNotEquals",
+                variable: "aws:PrincipalTag/Role",
+                values: ["admin"],
+            }],
+        },
+    ],
+});
+
+const dataPolicy = new aws.iam.Policy("dataPolicy", {
+    description: "Grants read access to the data bucket",
+    policy: policyDoc.json,
+});
+```
+
+```python __main__.py
+import pulumi
+import pulumi_aws as aws
+
+bucket = aws.s3.Bucket("data")
+
+policy_doc = aws.iam.get_policy_document_output(
+    statements=[
+        aws.iam.GetPolicyDocumentStatementArgs(
+            sid="AllowS3Read",
+            effect="Allow",
+            actions=["s3:GetObject", "s3:ListBucket"],
+            resources=[
+                bucket.arn,
+                bucket.arn.apply(lambda arn: f"{arn}/*"),
+            ],
+        ),
+        aws.iam.GetPolicyDocumentStatementArgs(
+            sid="DenyDeleteUnlessAdmin",
+            effect="Deny",
+            actions=["s3:DeleteObject", "s3:DeleteBucket"],
+            resources=["*"],
+            conditions=[aws.iam.GetPolicyDocumentStatementConditionArgs(
+                test="StringNotEquals",
+                variable="aws:PrincipalTag/Role",
+                values=["admin"],
+            )],
+        ),
+    ],
+)
+
+data_policy = aws.iam.Policy("dataPolicy",
+    description="Grants read access to the data bucket",
+    policy=policy_doc.json,
+)
+```
+
+</CodeGroup>
+
+You can also pass a raw `PolicyDocument` object directly to `assumeRolePolicy` or the `policy` field without calling `getPolicyDocument` — the provider accepts both:
+
+```typescript index.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const account = aws.getCallerIdentityOutput().accountId;
+const baseRole = new aws.iam.Role("baseRole", {
+    assumeRolePolicy: {
+        Version: "2012-10-17",
+        Statement: [{
+            Sid: "AllowAWSPrincipal",
+            Effect: "Allow",
+            Action: "sts:AssumeRole",
+            Principal: {
+                AWS: [pulumi.interpolate`arn:aws:iam::${account}:root`],
+            },
+        }],
+    },
+});
+```
+
+## Attaching managed policies
+
+Attach AWS-managed policies using the `aws.iam.ManagedPolicy` enum to avoid typos in ARN strings.
+
+<CodeGroup>
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Attach a single AWS-managed policy
+new aws.iam.RolePolicyAttachment("lambdaBasic", {
+    role: lambdaRole.name,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+});
+
+// Attach multiple managed policies
+const managedPolicies = [
+    aws.iam.ManagedPolicy.AWSLambdaVPCAccessExecutionRole,
+    aws.iam.ManagedPolicy.AmazonDynamoDBFullAccess,
+];
+
+managedPolicies.forEach((policyArn, i) => {
+    new aws.iam.RolePolicyAttachment(`attach-${i}`, {
+        role: lambdaRole.name,
+        policyArn,
+    });
+});
+```
+
+```python __main__.py
+import pulumi_aws as aws
+
+aws.iam.RolePolicyAttachment("lambdaBasic",
+    role=lambda_role.name,
+    policy_arn=aws.iam.ManagedPolicy.AWS_LAMBDA_BASIC_EXECUTION_ROLE,
+)
+```
+
+</CodeGroup>
+
+## Inline role policies
+
+Use `aws.iam.RolePolicy` for policies that are tightly coupled to a single role and should not be shared.
+
+```typescript index.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+new aws.iam.RolePolicy("inlinePolicy", {
+    role: lambdaRole.name,
+    policy: {
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
+            Resource: "arn:aws:logs:*:*:*",
+        }],
+    },
+});
+```
+
+## Cross-account role chaining with assumeRoles (v7)
+
+Provider-level role assumption lets Pulumi use temporary credentials for the duration of a deployment. In v7 the `assumeRoles` option is a **list**, allowing chained assumptions.
+
+<CodeGroup>
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Single role assumption
+const crossAccountProvider = new aws.Provider("crossAccount", {
+    region: "us-east-1",
+    assumeRoles: [{
+        roleArn: "arn:aws:iam::123456789012:role/DeploymentRole",
+        sessionName: "pulumi-deploy",
+        externalId: "my-external-id",   // required by the role's trust policy
+    }],
+});
+
+// All resources using this provider assume the role above
+const bucket = new aws.s3.Bucket("crossAccountBucket", {}, {
+    provider: crossAccountProvider,
+});
+```
+
+```python __main__.py
+import pulumi_aws as aws
+
+cross_account_provider = aws.Provider("crossAccount",
+    region="us-east-1",
+    assume_roles=[aws.ProviderAssumeRoleArgs(
+        role_arn="arn:aws:iam::123456789012:role/DeploymentRole",
+        session_name="pulumi-deploy",
+        external_id="my-external-id",
+    )],
+)
+
+bucket = aws.s3.Bucket("crossAccountBucket",
+    opts=pulumi.ResourceOptions(provider=cross_account_provider),
+)
+```
+
+</CodeGroup>
+
+You can also set `assumeRoles` in stack config without code changes:
+
+```bash
+pulumi config set --path aws:assumeRoles[0].roleArn arn:aws:iam::123456789012:role/DeploymentRole
+```
+
+## KMS key with a key policy
+
+KMS key policies govern who can manage and use the key. The example below allows the account root to administer the key and a specific role to encrypt and decrypt.
+
+```typescript index.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const account = aws.getCallerIdentityOutput();
+
+const keyPolicy = aws.iam.getPolicyDocumentOutput({
+    statements: [
+        {
+            sid: "EnableRootManagement",
+            effect: "Allow",
+            principals: [{
+                type: "AWS",
+                identifiers: [
+                    pulumi.interpolate`arn:aws:iam::${account.accountId}:root`,
+                ],
+            }],
+            actions: ["kms:*"],
+            resources: ["*"],
+        },
+        {
+            sid: "AllowLambdaEncrypt",
+            effect: "Allow",
+            principals: [{
+                type: "AWS",
+                identifiers: [lambdaRole.arn],
+            }],
+            actions: ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"],
+            resources: ["*"],
+        },
+    ],
+});
+
+const key = new aws.kms.Key("dataKey", {
+    description: "Key for Lambda data encryption",
+    deletionWindowInDays: 30,
+    enableKeyRotation: true,
+    policy: keyPolicy.json,
+});
+
+const keyAlias = new aws.kms.Alias("dataKeyAlias", {
+    name: "alias/lambda-data-key",
+    targetKeyId: key.keyId,
+});
+
+export const keyArn = key.arn;
+```
+
+<Warning>
+KMS keys continue to incur charges during their deletion window (7–30 days). Always set `deletionWindowInDays` explicitly and protect production keys with `ignoreChanges` or resource protection.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="IAM API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/iam/">
+    Full resource documentation for `aws.iam.*`.
+  </Card>
+  <Card title="KMS API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/kms/">
+    Full resource documentation for `aws.kms.*`.
+  </Card>
+</CardGroup>

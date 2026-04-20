@@ -1,0 +1,447 @@
+---
+title: "aws.apigateway and aws.apigatewayv2 — REST and HTTP APIs"
+description: "Reference for API Gateway resources in Pulumi: create REST APIs (v1), HTTP/WebSocket APIs (v2), stages, deployments, and Lambda integrations."
+---
+
+The `aws.apigateway` module manages Amazon API Gateway Version 1 (REST APIs), while `aws.apigatewayv2` manages Version 2 (HTTP and WebSocket APIs). Use v1 resources when you need request/response transformation, API keys, usage plans, or fine-grained method configuration. Use v2 resources for simpler HTTP APIs with lower latency, automatic deployments, and JWT authorization.
+
+<Warning>
+**v7 breaking change — `aws.apigateway.Deployment`**: The `stageName`, `stageDescription`, and `canarySettings` arguments have been removed from `aws.apigateway.Deployment`. Create an `aws.apigateway.Stage` resource instead. Additionally, `invokeUrl` and `executionArn` are no longer available on `Deployment` — read them from the `Stage` resource.
+</Warning>
+
+## REST API (aws.apigateway)
+
+### RestApi
+
+`aws.apigateway.RestApi` defines the top-level REST API container.
+
+<ParamField path="name" type="string">
+  Name of the REST API. Maps to `info.title` in an OpenAPI body.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-readable description of the API.
+</ParamField>
+
+<ParamField path="endpointConfiguration" type="object">
+  Configures the endpoint type. Set `types` to `EDGE`, `REGIONAL`, or `PRIVATE`.
+</ParamField>
+
+<ParamField path="body" type="string">
+  OpenAPI specification JSON/YAML. When provided, it replaces all existing resources and methods unless `putRestApiMode` is set to `merge`.
+</ParamField>
+
+<ParamField path="disableExecuteApiEndpoint" type="boolean">
+  Disables the default `execute-api` endpoint. Useful when enforcing custom domain access only.
+</ParamField>
+
+<ParamField path="apiKeySource" type="string">
+  Source of the API key. Valid values: `HEADER` (default), `AUTHORIZER`.
+</ParamField>
+
+<ParamField path="tags" type="map">
+  Key-value map of resource tags.
+</ParamField>
+
+**Outputs**: `arn`, `executionArn`, `rootResourceId`, `createdDate`
+
+### Resource
+
+`aws.apigateway.Resource` adds a path segment to the REST API.
+
+<ParamField path="restApi" type="string | RestApi" required>
+  ID of the associated REST API.
+</ParamField>
+
+<ParamField path="parentId" type="string" required>
+  ID of the parent resource. Use `restApi.rootResourceId` for top-level paths.
+</ParamField>
+
+<ParamField path="pathPart" type="string" required>
+  URL path segment (e.g., `users` or `{proxy+}`).
+</ParamField>
+
+### Method
+
+`aws.apigateway.Method` configures an HTTP method on a resource.
+
+<ParamField path="restApi" type="string | RestApi" required>
+  ID of the associated REST API.
+</ParamField>
+
+<ParamField path="resourceId" type="string" required>
+  ID of the resource to attach the method to.
+</ParamField>
+
+<ParamField path="httpMethod" type="string" required>
+  HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `OPTIONS`, or `ANY`.
+</ParamField>
+
+<ParamField path="authorization" type="string" required>
+  Authorization type: `NONE`, `CUSTOM`, `AWS_IAM`, or `COGNITO_USER_POOLS`.
+</ParamField>
+
+<ParamField path="authorizerId" type="string">
+  ID of a `aws.apigateway.Authorizer`. Required when `authorization` is `CUSTOM` or `COGNITO_USER_POOLS`.
+</ParamField>
+
+<ParamField path="requestParameters" type="map">
+  Map of request parameters. Keys use the form `method.request.path.param`, `method.request.querystring.param`, or `method.request.header.HeaderName`. Boolean value indicates whether the parameter is required.
+</ParamField>
+
+### Integration
+
+`aws.apigateway.Integration` connects a method to a backend.
+
+<ParamField path="restApi" type="string | RestApi" required>
+  ID of the associated REST API.
+</ParamField>
+
+<ParamField path="resourceId" type="string" required>
+  ID of the resource.
+</ParamField>
+
+<ParamField path="httpMethod" type="string" required>
+  HTTP method on the resource.
+</ParamField>
+
+<ParamField path="type" type="string" required>
+  Integration type: `AWS_PROXY` (Lambda proxy), `HTTP_PROXY`, `AWS`, `HTTP`, or `MOCK`.
+</ParamField>
+
+<ParamField path="integrationHttpMethod" type="string">
+  HTTP method used to call the backend. Required when `type` is `AWS`, `AWS_PROXY`, `HTTP`, or `HTTP_PROXY`. For Lambda, this must be `POST`.
+</ParamField>
+
+<ParamField path="uri" type="string">
+  Backend URI. For Lambda proxy integrations, use `lambda.invokeArn`. Required when `type` is `AWS`, `AWS_PROXY`, `HTTP`, or `HTTP_PROXY`.
+</ParamField>
+
+<ParamField path="connectionType" type="string">
+  Network connection type: `INTERNET` (default) or `VPC_LINK`.
+</ParamField>
+
+<ParamField path="timeoutMilliseconds" type="number">
+  Integration timeout. Minimum 50, maximum 300,000 ms (buffered) or 900,000 ms (streaming). Default is 29,000.
+</ParamField>
+
+### Deployment
+
+`aws.apigateway.Deployment` captures a snapshot of the REST API configuration.
+
+<ParamField path="restApi" type="string | RestApi" required>
+  ID of the REST API to deploy.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Description of this deployment.
+</ParamField>
+
+<ParamField path="triggers" type="map">
+  Arbitrary key-value map. When any value changes, a new deployment is created. Use this to trigger redeployment when resources, methods, or integrations change.
+</ParamField>
+
+<Note>
+In v7, `stageName`, `stageDescription`, and `canarySettings` were removed from `Deployment`. Create an `aws.apigateway.Stage` and reference the deployment there.
+</Note>
+
+### Stage
+
+`aws.apigateway.Stage` publishes a deployment under a named stage.
+
+<ParamField path="restApi" type="string | RestApi" required>
+  ID of the associated REST API.
+</ParamField>
+
+<ParamField path="deployment" type="string | Deployment" required>
+  ID of the deployment to publish.
+</ParamField>
+
+<ParamField path="stageName" type="string" required>
+  Name of the stage (e.g., `prod`, `v1`).
+</ParamField>
+
+<ParamField path="xrayTracingEnabled" type="boolean">
+  Enables active tracing with AWS X-Ray. Defaults to `false`.
+</ParamField>
+
+<ParamField path="accessLogSettings" type="object">
+  Enables access logging. Provide a `destinationArn` (CloudWatch Logs ARN or Firehose ARN).
+</ParamField>
+
+<ParamField path="canarySettings" type="object">
+  Canary deployment configuration for the stage.
+</ParamField>
+
+**Outputs** (v7+): `invokeUrl`, `executionArn`, `arn`
+
+---
+
+## HTTP and WebSocket API (aws.apigatewayv2)
+
+### Api
+
+`aws.apigatewayv2.Api` is the top-level resource for HTTP and WebSocket APIs.
+
+<ParamField path="name" type="string">
+  API name. Maximum 128 characters.
+</ParamField>
+
+<ParamField path="protocolType" type="string" required>
+  Protocol: `HTTP` or `WEBSOCKET`.
+</ParamField>
+
+<ParamField path="corsConfiguration" type="object">
+  CORS configuration. Applicable to HTTP APIs only. Accepts `allowOrigins`, `allowMethods`, `allowHeaders`, `exposeHeaders`, `maxAge`, and `allowCredentials`.
+</ParamField>
+
+<ParamField path="routeSelectionExpression" type="string">
+  Expression used to select the route for WebSocket APIs. For example: `$request.body.action`.
+</ParamField>
+
+<ParamField path="disableExecuteApiEndpoint" type="boolean">
+  Disables the default endpoint. Requires a custom domain name.
+</ParamField>
+
+**Outputs**: `apiEndpoint`, `executionArn`, `arn`
+
+### Integration
+
+`aws.apigatewayv2.Integration` connects a route to a backend.
+
+<ParamField path="apiId" type="string" required>
+  ID of the API.
+</ParamField>
+
+<ParamField path="integrationType" type="string" required>
+  Integration type: `AWS_PROXY` (Lambda or AWS service), `HTTP_PROXY`, `HTTP` (WebSocket only), `AWS` (WebSocket only), or `MOCK` (WebSocket only).
+</ParamField>
+
+<ParamField path="integrationUri" type="string">
+  URI of the backend. For Lambda, use `lambda.invokeArn`. For HTTP, use a fully qualified URL.
+</ParamField>
+
+<ParamField path="integrationMethod" type="string">
+  HTTP method used to call the backend. Required when `integrationType` is not `MOCK`.
+</ParamField>
+
+<ParamField path="payloadFormatVersion" type="string">
+  Payload format version: `1.0` (default) or `2.0`. Version 2.0 is simpler and recommended for Lambda.
+</ParamField>
+
+<ParamField path="connectionType" type="string">
+  Network connection: `INTERNET` (default) or `VPC_LINK`.
+</ParamField>
+
+### Route
+
+`aws.apigatewayv2.Route` maps route keys to integrations.
+
+<ParamField path="apiId" type="string" required>
+  ID of the API.
+</ParamField>
+
+<ParamField path="routeKey" type="string" required>
+  Route key. For HTTP APIs: `$default` or `METHOD /path` (e.g., `GET /users`). For WebSocket APIs: `$connect`, `$disconnect`, `$default`, or a custom route key.
+</ParamField>
+
+<ParamField path="target" type="string">
+  Integration target. Must be `integrations/{IntegrationId}`.
+</ParamField>
+
+<ParamField path="authorizationType" type="string">
+  Authorization type: `NONE`, `JWT`, `AWS_IAM`, or `CUSTOM`.
+</ParamField>
+
+### Stage (v2)
+
+`aws.apigatewayv2.Stage` manages a named stage for HTTP or WebSocket APIs.
+
+<ParamField path="apiId" type="string" required>
+  ID of the API.
+</ParamField>
+
+<ParamField path="name" type="string">
+  Stage name. Maximum 128 characters.
+</ParamField>
+
+<ParamField path="autoDeploy" type="boolean">
+  Automatically deploys API changes. Applicable for HTTP APIs. Defaults to `false`.
+</ParamField>
+
+<ParamField path="deploymentId" type="string">
+  Explicit deployment ID. Used for manual deployments when `autoDeploy` is `false`.
+</ParamField>
+
+**Outputs**: `invokeUrl`, `executionArn`, `arn`
+
+### DomainName
+
+`aws.apigatewayv2.DomainName` establishes ownership of a custom domain and configures TLS.
+
+<ParamField path="domainName" type="string" required>
+  Custom domain name (e.g., `api.example.com`).
+</ParamField>
+
+<ParamField path="domainNameConfiguration" type="object" required>
+  TLS and endpoint configuration. Requires `certificateArn` (ACM), `endpointType` (`REGIONAL`), and `securityPolicy` (`TLS_1_2`).
+</ParamField>
+
+---
+
+## Complete example: Lambda + REST API
+
+The following example creates a Lambda function and exposes it through a REST API with a proxy integration.
+
+```typescript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// IAM role for Lambda
+const lambdaRole = new aws.iam.Role("lambdaRole", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: { Service: "lambda.amazonaws.com" },
+        }],
+    }),
+});
+
+new aws.iam.RolePolicyAttachment("lambdaBasic", {
+    role: lambdaRole.name,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+});
+
+// Lambda function
+const handler = new aws.lambda.Function("handler", {
+    runtime: aws.lambda.Runtime.NodeJS20dX,
+    handler: "index.handler",
+    role: lambdaRole.arn,
+    code: new pulumi.asset.AssetArchive({
+        "index.js": new pulumi.asset.StringAsset(
+            `exports.handler = async (e) => ({ statusCode: 200, body: "OK" });`
+        ),
+    }),
+});
+
+// REST API
+const api = new aws.apigateway.RestApi("api", {
+    name: "my-api",
+    endpointConfiguration: { types: "REGIONAL" },
+});
+
+// Resource: /hello
+const resource = new aws.apigateway.Resource("resource", {
+    restApi: api.id,
+    parentId: api.rootResourceId,
+    pathPart: "hello",
+});
+
+// Method: GET /hello
+const method = new aws.apigateway.Method("method", {
+    restApi: api.id,
+    resourceId: resource.id,
+    httpMethod: "GET",
+    authorization: "NONE",
+});
+
+// Lambda proxy integration
+const integration = new aws.apigateway.Integration("integration", {
+    restApi: api.id,
+    resourceId: resource.id,
+    httpMethod: method.httpMethod,
+    integrationHttpMethod: "POST",
+    type: "AWS_PROXY",
+    uri: handler.invokeArn,
+});
+
+// Deployment (triggers redeploy when integration changes)
+const deployment = new aws.apigateway.Deployment("deployment", {
+    restApi: api.id,
+    triggers: {
+        redeployment: pulumi.all([integration.uri, method.httpMethod])
+            .apply(vals => JSON.stringify(vals)),
+    },
+}, { dependsOn: [method, integration] });
+
+// Stage — invokeUrl and executionArn live here in v7
+const stage = new aws.apigateway.Stage("stage", {
+    restApi: api.id,
+    deployment: deployment.id,
+    stageName: "prod",
+});
+
+// Allow API Gateway to invoke the Lambda
+const permission = new aws.lambda.Permission("permission", {
+    action: "lambda:InvokeFunction",
+    function: handler.name,
+    principal: "apigateway.amazonaws.com",
+    sourceArn: pulumi.interpolate`${stage.executionArn}/*/*`,
+});
+
+export const url = pulumi.interpolate`${stage.invokeUrl}/hello`;
+```
+
+---
+
+## HTTP API (v2) quick example
+
+```typescript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const fn = new aws.lambda.Function("fn", {
+    runtime: aws.lambda.Runtime.NodeJS20dX,
+    handler: "index.handler",
+    role: lambdaRole.arn,
+    code: new pulumi.asset.AssetArchive({
+        "index.js": new pulumi.asset.StringAsset(
+            `exports.handler = async () => ({ statusCode: 200, body: "Hello" });`
+        ),
+    }),
+});
+
+const httpApi = new aws.apigatewayv2.Api("httpApi", {
+    name: "http-api",
+    protocolType: "HTTP",
+    corsConfiguration: {
+        allowOrigins: ["*"],
+        allowMethods: ["GET", "POST"],
+    },
+});
+
+const integration = new aws.apigatewayv2.Integration("integration", {
+    apiId: httpApi.id,
+    integrationType: "AWS_PROXY",
+    integrationUri: fn.invokeArn,
+    integrationMethod: "POST",
+    payloadFormatVersion: "2.0",
+});
+
+const route = new aws.apigatewayv2.Route("route", {
+    apiId: httpApi.id,
+    routeKey: "GET /hello",
+    target: pulumi.interpolate`integrations/${integration.id}`,
+});
+
+const stage = new aws.apigatewayv2.Stage("stage", {
+    apiId: httpApi.id,
+    name: "$default",
+    autoDeploy: true,
+});
+
+new aws.lambda.Permission("apiPermission", {
+    action: "lambda:InvokeFunction",
+    function: fn.name,
+    principal: "apigateway.amazonaws.com",
+    sourceArn: pulumi.interpolate`${httpApi.executionArn}/*/*`,
+});
+
+export const endpoint = stage.invokeUrl;
+```
+
+<Tip>
+For HTTP APIs, set `autoDeploy: true` on the stage to automatically deploy every API change without creating separate `aws.apigatewayv2.Deployment` resources.
+</Tip>

@@ -1,0 +1,72 @@
+---
+title: "Migrate to Pulumi AWS Provider v6"
+description: "Overview of breaking changes and migration steps when upgrading the Pulumi AWS Provider from v5 to v6, including S3 and IAM updates."
+---
+
+Version 6.0.0 of the Pulumi AWS Provider aligned the S3 resource implementation with the upstream Terraform AWS provider, introduced `aws.s3.BucketV2` as the recommended S3 bucket resource, and made several other breaking changes. If you are currently on v5, you must complete this migration before upgrading to v7.
+
+<Info>
+The authoritative guide for the v5 to v6 migration is published on the Pulumi Registry:
+[https://www.pulumi.com/registry/packages/aws/how-to-guides/6-0-migration/](https://www.pulumi.com/registry/packages/aws/how-to-guides/6-0-migration/)
+
+This page provides orientation and context. Follow the official guide for complete migration steps.
+</Info>
+
+<Note>
+After completing the v5 to v6 migration, follow the [Migrate to Pulumi AWS Provider v7](/migration/version-7-upgrade) guide to continue to the latest major version.
+</Note>
+
+## What changed in v6
+
+### S3 Bucket resources
+
+The most significant change in v6 was the introduction of `aws.s3.BucketV2` as the primary S3 bucket resource. This new resource aligned directly with the upstream Terraform `aws_s3_bucket` resource, while the original `aws.s3.Bucket` was retained for backwards compatibility with v4/v5 code.
+
+In v6, these two resources represented **different implementations**:
+
+- `aws.s3.Bucket` — the legacy Pulumi-maintained S3 bucket with v4-compatible properties.
+- `aws.s3.BucketV2` — the upstream-aligned implementation, recommended for all new code.
+
+Alongside `BucketV2`, v6 introduced a set of separate configuration resources (each suffixed with `V2`) for managing individual S3 bucket settings:
+
+- `aws.s3.BucketAclV2`
+- `aws.s3.BucketCorsConfigurationV2`
+- `aws.s3.BucketLifecycleConfigurationV2`
+- `aws.s3.BucketLoggingV2`
+- `aws.s3.BucketVersioningV2`
+- `aws.s3.BucketWebsiteConfigurationV2`
+- And others
+
+These replaced inline properties on the legacy `aws.s3.Bucket` resource, following the upstream Terraform pattern of splitting bucket configuration into dedicated resources.
+
+### IAM and other updates
+
+v6 also included changes to IAM resources and several other provider-level behaviors. Refer to the [official migration guide](https://www.pulumi.com/registry/packages/aws/how-to-guides/6-0-migration/) for the complete list of breaking changes.
+
+## Migration path
+
+If you are on v5, follow this sequence:
+
+<Steps>
+  <Step title="Follow the official v6 migration guide">
+    Read and apply the steps in the [official Pulumi registry v6 migration guide](https://www.pulumi.com/registry/packages/aws/how-to-guides/6-0-migration/). This covers all breaking changes from v5 to v6 with code examples.
+  </Step>
+  <Step title="Upgrade to the latest v6 patch release">
+    After completing the v6 migration, ensure you are on the latest `6.x` patch release before proceeding further. Run `pulumi preview` and confirm no errors or unexpected changes.
+  </Step>
+  <Step title="Follow the v7 upgrade guide">
+    Once stable on the latest v6, follow the [Migrate to Pulumi AWS Provider v7](/migration/version-7-upgrade) guide to complete your upgrade to v7.
+  </Step>
+</Steps>
+
+## What v7 builds on from v6
+
+Understanding what v6 introduced helps you follow the v7 changes:
+
+- **v7 unifies `s3.Bucket` and `s3.BucketV2`** — In v7, both resources point to the same upstream implementation. If you migrated to `BucketV2` in v6, you can migrate back to `Bucket` in v7 (or keep using `BucketV2`, as it still works).
+- **v7 deprecates the `V2` resource names** — The `BucketAclV2`, `BucketLoggingV2`, and other `V2`-suffixed resources introduced in v6 have non-`V2` aliases in v7. The `V2` names will be removed in v8.
+- **v7 changes tags behavior** — v6 included Pulumi-level tag customizations that made `tags` return all tags including defaults. v7 removes this, requiring use of `tagsAll` for the complete set.
+
+<Tip>
+If you are starting a new project, use v7 directly. The v6 `BucketV2` resources are the same implementation as v7 `Bucket`, so code written for v6 with `BucketV2` is straightforward to migrate.
+</Tip>

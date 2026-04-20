@@ -1,0 +1,348 @@
+---
+title: "aws.sns — SNS topics, subscriptions, and event routing"
+description: "Reference for the aws.sns module: create SNS topics, add email or Lambda subscriptions, set topic policies, and configure FIFO topics."
+---
+
+Amazon Simple Notification Service (SNS) is a fully managed pub/sub messaging service. The `aws.sns` module lets you create topics, attach subscriptions across multiple protocols, set resource policies, and build fan-out architectures that deliver messages to many consumers simultaneously.
+
+## aws.sns.Topic
+
+`aws.sns.Topic` creates an SNS topic that acts as the message source for all subscriptions.
+
+<ParamField path="name" type="string">
+  Topic name. For FIFO topics, the name must end with `.fifo`. Maximum 256 characters. Conflicts with `namePrefix`.
+</ParamField>
+
+<ParamField path="displayName" type="string">
+  Human-readable display name. Used as the subject for email subscriptions and in SMS messages.
+</ParamField>
+
+<ParamField path="fifoTopic" type="boolean">
+  Creates a FIFO (first-in-first-out) topic. FIFO topics cannot deliver to email, SMS, HTTP/S, or mobile push endpoints. Default is `false`.
+</ParamField>
+
+<ParamField path="contentBasedDeduplication" type="boolean">
+  Enables content-based deduplication for FIFO topics. Messages with identical content within the deduplication window are treated as duplicates.
+</ParamField>
+
+<ParamField path="kmsMasterKeyId" type="string">
+  KMS key ID or alias for server-side encryption. For example: `alias/aws/sns`.
+</ParamField>
+
+<ParamField path="deliveryPolicy" type="string">
+  JSON delivery policy for HTTP/S subscriptions. Controls retry behavior and throttling.
+</ParamField>
+
+<ParamField path="archivePolicy" type="string">
+  Message archive policy for FIFO topics. Enables message replay.
+</ParamField>
+
+<ParamField path="tracingConfig" type="string">
+  X-Ray tracing mode. Valid values: `PassThrough`, `Active`.
+</ParamField>
+
+<ParamField path="tags" type="map">
+  Key-value map of resource tags.
+</ParamField>
+
+**Outputs**: `arn`, `owner`, `beginningArchiveTime`
+
+## aws.sns.TopicSubscription
+
+`aws.sns.TopicSubscription` subscribes an endpoint to an SNS topic.
+
+<ParamField path="topic" type="string | Topic" required>
+  ARN of the SNS topic.
+</ParamField>
+
+<ParamField path="protocol" type="string" required>
+  Delivery protocol. Fully supported values: `sqs`, `lambda`, `firehose`, `application`, `sms`. Partially supported: `email`, `email-json`, `http`, `https`.
+</ParamField>
+
+<ParamField path="endpoint" type="string" required>
+  Destination address. For `sqs`, provide the queue ARN. For `lambda`, provide the function ARN. For `email`, provide an email address. For `http`/`https`, provide the URL.
+</ParamField>
+
+<ParamField path="filterPolicy" type="string">
+  JSON filter policy. Only messages matching the policy attributes are delivered to this subscription.
+</ParamField>
+
+<ParamField path="filterPolicyScope" type="string">
+  Scope of the filter policy: `MessageAttributes` (default) or `MessageBody`.
+</ParamField>
+
+<ParamField path="rawMessageDelivery" type="boolean">
+  When `true`, the raw message is delivered without the SNS JSON envelope. Default is `false`.
+</ParamField>
+
+<ParamField path="redrivePolicy" type="string">
+  JSON redrive policy for dead-letter queue configuration on this subscription.
+</ParamField>
+
+<ParamField path="subscriptionRoleArn" type="string">
+  IAM role ARN for Firehose subscriptions.
+</ParamField>
+
+**Outputs**: `arn`, `ownerId`, `pendingConfirmation`, `confirmationWasAuthenticated`
+
+<Note>
+Subscriptions using `email`, `email-json`, or unconfirmed `http`/`https` endpoints cannot be deleted by Pulumi until the subscription is confirmed externally. If you destroy such a subscription before confirmation, Pulumi removes it from state but AWS retains it.
+</Note>
+
+## aws.sns.TopicPolicy
+
+`aws.sns.TopicPolicy` attaches a resource-based IAM policy to a topic. Use this to grant cross-account access or allow AWS services (such as EventBridge or S3) to publish.
+
+<ParamField path="arn" type="string" required>
+  ARN of the SNS topic.
+</ParamField>
+
+<ParamField path="policy" type="string" required>
+  JSON policy document. Use `aws.iam.getPolicyDocument` to construct it.
+</ParamField>
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```typescript sns-topic.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const topic = new aws.sns.Topic("topic", {
+    name: "orders",
+    displayName: "Order Events",
+    kmsMasterKeyId: "alias/aws/sns",
+    tags: { Environment: "production" },
+});
+
+// Email subscription (requires manual confirmation)
+const emailSub = new aws.sns.TopicSubscription("emailSub", {
+    topic: topic.arn,
+    protocol: "email",
+    endpoint: "ops@example.com",
+});
+
+// Lambda subscription
+const lambdaSub = new aws.sns.TopicSubscription("lambdaSub", {
+    topic: topic.arn,
+    protocol: "lambda",
+    endpoint: processorFn.arn,
+});
+
+// Allow SNS to invoke the Lambda
+const lambdaPermission = new aws.lambda.Permission("snsPermission", {
+    action: "lambda:InvokeFunction",
+    function: processorFn.name,
+    principal: "sns.amazonaws.com",
+    sourceArn: topic.arn,
+});
+
+export const topicArn = topic.arn;
+```
+
+```python sns_topic.py
+import pulumi
+import pulumi_aws as aws
+
+topic = aws.sns.Topic("topic",
+    name="orders",
+    display_name="Order Events",
+    kms_master_key_id="alias/aws/sns",
+    tags={"Environment": "production"},
+)
+
+# Email subscription (requires manual confirmation)
+email_sub = aws.sns.TopicSubscription("emailSub",
+    topic=topic.arn,
+    protocol="email",
+    endpoint="ops@example.com",
+)
+
+# Lambda subscription
+lambda_sub = aws.sns.TopicSubscription("lambdaSub",
+    topic=topic.arn,
+    protocol="lambda",
+    endpoint=processor_fn.arn,
+)
+
+# Allow SNS to invoke the Lambda
+lambda_permission = aws.lambda_.Permission("snsPermission",
+    action="lambda:InvokeFunction",
+    function=processor_fn.name,
+    principal="sns.amazonaws.com",
+    source_arn=topic.arn,
+)
+
+pulumi.export("topic_arn", topic.arn)
+```
+
+</CodeGroup>
+
+### Fan-out pattern: SNS → multiple SQS queues
+
+The fan-out pattern allows one SNS publish to deliver messages to multiple SQS queues in parallel. Each queue can have independent consumers and processing logic.
+
+<CodeGroup>
+
+```typescript fanout.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// SNS topic
+const ordersTopic = new aws.sns.Topic("ordersTopic", {
+    name: "orders",
+});
+
+// SQS queue for order fulfillment
+const fulfillmentQueue = new aws.sqs.Queue("fulfillmentQueue", {
+    name: "order-fulfillment",
+});
+
+// SQS queue for order analytics
+const analyticsQueue = new aws.sqs.Queue("analyticsQueue", {
+    name: "order-analytics",
+});
+
+// Grant SNS permission to write to each queue
+const makeSqsPolicy = (queue: aws.sqs.Queue) =>
+    new aws.sqs.QueuePolicy(`policy-${queue.name}`, {
+        queueUrl: queue.id,
+        policy: pulumi.jsonStringify({
+            Version: "2012-10-17",
+            Statement: [{
+                Effect: "Allow",
+                Principal: { Service: "sns.amazonaws.com" },
+                Action: "sqs:SendMessage",
+                Resource: queue.arn,
+                Condition: {
+                    ArnEquals: { "aws:SourceArn": ordersTopic.arn },
+                },
+            }],
+        }),
+    });
+
+makeSqsPolicy(fulfillmentQueue);
+makeSqsPolicy(analyticsQueue);
+
+// Subscribe both queues to the topic
+new aws.sns.TopicSubscription("fulfillmentSub", {
+    topic: ordersTopic.arn,
+    protocol: "sqs",
+    endpoint: fulfillmentQueue.arn,
+});
+
+new aws.sns.TopicSubscription("analyticsSub", {
+    topic: ordersTopic.arn,
+    protocol: "sqs",
+    endpoint: analyticsQueue.arn,
+    // Deliver only high-value orders to analytics
+    filterPolicy: JSON.stringify({
+        orderValue: [{ numeric: [">=", 100] }],
+    }),
+});
+
+export const topicArn = ordersTopic.arn;
+```
+
+```python fanout.py
+import pulumi
+import pulumi_aws as aws
+
+orders_topic = aws.sns.Topic("ordersTopic", name="orders")
+
+fulfillment_queue = aws.sqs.Queue("fulfillmentQueue", name="order-fulfillment")
+analytics_queue = aws.sqs.Queue("analyticsQueue", name="order-analytics")
+
+def make_sqs_policy(queue, suffix):
+    return aws.sqs.QueuePolicy(f"policy-{suffix}",
+        queue_url=queue.id,
+        policy=pulumi.Output.json_dumps({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "sns.amazonaws.com"},
+                "Action": "sqs:SendMessage",
+                "Resource": queue.arn,
+                "Condition": {
+                    "ArnEquals": {"aws:SourceArn": orders_topic.arn},
+                },
+            }],
+        }),
+    )
+
+make_sqs_policy(fulfillment_queue, "fulfillment")
+make_sqs_policy(analytics_queue, "analytics")
+
+aws.sns.TopicSubscription("fulfillmentSub",
+    topic=orders_topic.arn,
+    protocol="sqs",
+    endpoint=fulfillment_queue.arn,
+)
+
+aws.sns.TopicSubscription("analyticsSub",
+    topic=orders_topic.arn,
+    protocol="sqs",
+    endpoint=analytics_queue.arn,
+    filter_policy='{"orderValue": [{"numeric": [">=", 100]}]}',
+)
+
+pulumi.export("topic_arn", orders_topic.arn)
+```
+
+</CodeGroup>
+
+### FIFO topic
+
+<CodeGroup>
+
+```typescript fifo-topic.ts
+import * as aws from "@pulumi/aws";
+
+const fifoTopic = new aws.sns.Topic("fifoTopic", {
+    name: "orders.fifo",
+    fifoTopic: true,
+    contentBasedDeduplication: true,
+});
+
+// FIFO SQS subscriber (must also be a FIFO queue)
+const fifoQueue = new aws.sqs.Queue("fifoQueue", {
+    name: "order-processing.fifo",
+    fifoQueue: true,
+});
+
+new aws.sns.TopicSubscription("fifoSub", {
+    topic: fifoTopic.arn,
+    protocol: "sqs",
+    endpoint: fifoQueue.arn,
+});
+```
+
+```python fifo_topic.py
+import pulumi_aws as aws
+
+fifo_topic = aws.sns.Topic("fifoTopic",
+    name="orders.fifo",
+    fifo_topic=True,
+    content_based_deduplication=True,
+)
+
+fifo_queue = aws.sqs.Queue("fifoQueue",
+    name="order-processing.fifo",
+    fifo_queue=True,
+)
+
+aws.sns.TopicSubscription("fifoSub",
+    topic=fifo_topic.arn,
+    protocol="sqs",
+    endpoint=fifo_queue.arn,
+)
+```
+
+</CodeGroup>
+
+<Tip>
+FIFO topics can only fan out to FIFO SQS queues or Lambda functions. They cannot deliver to email, SMS, HTTP/S, or mobile push endpoints.
+</Tip>

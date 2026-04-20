@@ -1,0 +1,386 @@
+---
+title: "aws.Provider — configure the Pulumi AWS Provider"
+description: "The aws.Provider resource configures AWS credentials, region, default tags, and endpoint overrides for all resources in a Pulumi stack."
+---
+
+The `aws.Provider` resource lets you create an explicit, named provider instance with its own credentials, region, and settings. By default, all resources in a Pulumi program use the package-wide provider configured via `pulumi config set aws:<option>` or environment variables. When you construct an explicit `Provider` and pass it as the `provider` resource option, only that resource (and any children that inherit it) use the overridden settings. This is the primary way to deploy into multiple AWS accounts or regions within a single stack.
+
+## Constructor signatures
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const provider = new aws.Provider(name: string, args?: ProviderArgs, opts?: pulumi.ResourceOptions);
+```
+
+```python Python
+import pulumi_aws as aws
+
+provider = aws.Provider(resource_name: str, opts: Optional[ResourceOptions] = None, *, access_key=None, assume_roles=None, default_tags=None, ignore_tags=None, max_retries=None, profile=None, region=None, secret_key=None, token=None, ...)
+```
+
+```go Go
+import "github.com/pulumi/pulumi-aws/sdk/v7/go/aws"
+
+provider, err := aws.NewProvider(ctx *pulumi.Context, name string, args *ProviderArgs, opts ...pulumi.ResourceOption) (*Provider, error)
+```
+
+```csharp .NET
+using Pulumi.Aws;
+
+var provider = new Provider(string name, ProviderArgs? args = null, CustomResourceOptions? options = null);
+```
+
+</CodeGroup>
+
+## Key arguments
+
+<ParamField path="region" type="string">
+  The AWS region where operations will take place. Examples: `us-east-1`, `us-west-2`, `eu-central-1`. Falls back to the `AWS_REGION` or `AWS_DEFAULT_REGION` environment variable if not set.
+</ParamField>
+
+<ParamField path="accessKey" type="string">
+  The AWS access key ID for API operations. Retrieve from the **Security & Credentials** section of the AWS console. Stored as a secret in Pulumi state. Prefer environment variables or shared credentials files over hardcoding this value.
+</ParamField>
+
+<ParamField path="secretKey" type="string">
+  The AWS secret access key for API operations. Stored as a secret in Pulumi state.
+</ParamField>
+
+<ParamField path="profile" type="string">
+  The named profile from `~/.aws/credentials` (or `~/.aws/config`) to use for API operations. If not set, the `default` profile is used. Equivalent to setting `AWS_PROFILE`.
+</ParamField>
+
+<ParamField path="assumeRoles" type="object[]">
+  A list of IAM roles to assume in sequence. Each entry is an object with the sub-fields below. This is the v7 syntax — see the [v6 → v7 migration note](#assumeroles-v6-to-v7) for the before/after.
+
+  <Expandable title="assumeRoles properties">
+    <ResponseField name="roleArn" type="string">Amazon Resource Name (ARN) of the IAM Role to assume.</ResponseField>
+    <ResponseField name="sessionName" type="string">Session name to use when assuming the role.</ResponseField>
+    <ResponseField name="externalId" type="string">External identifier required by the role's trust policy.</ResponseField>
+    <ResponseField name="durationSeconds" type="number">Lifetime of the assumed-role session in seconds.</ResponseField>
+    <ResponseField name="policy" type="string">IAM policy JSON that further restricts the assumed role's permissions.</ResponseField>
+    <ResponseField name="policyArns" type="string[]">ARNs of managed IAM policies that further restrict permissions.</ResponseField>
+    <ResponseField name="tags" type="object">Session tags to attach to the assumed-role session.</ResponseField>
+    <ResponseField name="transitiveTagKeys" type="string[]">Tag keys to pass to subsequent sessions.</ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="defaultTags" type="object">
+  A configuration block that applies a default set of tags to every resource managed by this provider instance. Resource-level `tags` arguments can add or override individual keys.
+
+  <Expandable title="defaultTags properties">
+    <ResponseField name="tags" type="object">Key-value map of tags to apply to all resources.</ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="ignoreTags" type="object">
+  A configuration block that prevents the provider from tracking or displaying diffs for specific tag keys or key prefixes. Useful when external systems (such as AWS Config or cost allocation tooling) manage certain tags outside of Pulumi.
+
+  <Expandable title="ignoreTags properties">
+    <ResponseField name="keys" type="string[]">Exact tag key names to ignore across all resources.</ResponseField>
+    <ResponseField name="keyPrefixes" type="string[]">Tag key prefixes to ignore across all resources.</ResponseField>
+  </Expandable>
+</ParamField>
+
+<ParamField path="token" type="string">
+  An MFA or session token. Required when using temporary security credentials. Can also be set via the `AWS_SESSION_TOKEN` environment variable. Stored as a secret in Pulumi state.
+</ParamField>
+
+<ParamField path="maxRetries" type="number">
+  Maximum number of times the provider retries a failed AWS API request before returning an error. Defaults to the AWS SDK default.
+</ParamField>
+
+## Using a named provider with the `provider` resource option
+
+Pass the provider instance to the `provider` option on any resource to use its settings for that resource:
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const euProvider = new aws.Provider("eu-provider", {
+    region: "eu-west-1",
+});
+
+const bucket = new aws.s3.BucketV2("my-bucket", {}, {
+    provider: euProvider,
+});
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+eu_provider = aws.Provider("eu-provider", region="eu-west-1")
+
+bucket = aws.s3.BucketV2("my-bucket", opts=pulumi.ResourceOptions(provider=eu_provider))
+```
+
+```go Go
+package main
+
+import (
+    "github.com/pulumi/pulumi-aws/sdk/v7/go/aws"
+    "github.com/pulumi/pulumi-aws/sdk/v7/go/aws/s3"
+    "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+)
+
+func main() {
+    pulumi.Run(func(ctx *pulumi.Context) error {
+        euProvider, err := aws.NewProvider(ctx, "eu-provider", &aws.ProviderArgs{
+            Region: pulumi.String("eu-west-1"),
+        })
+        if err != nil {
+            return err
+        }
+
+        _, err = s3.NewBucketV2(ctx, "my-bucket", nil, pulumi.Provider(euProvider))
+        return err
+    })
+}
+```
+
+```csharp .NET
+using Pulumi;
+using Pulumi.Aws;
+using Pulumi.Aws.S3;
+
+return await Deployment.RunAsync(() =>
+{
+    var euProvider = new Provider("eu-provider", new ProviderArgs
+    {
+        Region = "eu-west-1",
+    });
+
+    var bucket = new BucketV2("my-bucket", new BucketV2Args(), new CustomResourceOptions
+    {
+        Provider = euProvider,
+    });
+});
+```
+
+</CodeGroup>
+
+## Using multiple providers for different accounts and regions
+
+A common pattern is deploying resources into several AWS accounts or regions from a single stack. Create one `Provider` per target, then pass the appropriate one to each resource.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const usEast = new aws.Provider("us-east", {
+    region: "us-east-1",
+    profile: "prod-account",
+});
+
+const euWest = new aws.Provider("eu-west", {
+    region: "eu-west-1",
+    profile: "prod-account",
+});
+
+const usBucket = new aws.s3.BucketV2("us-bucket", {}, { provider: usEast });
+const euBucket = new aws.s3.BucketV2("eu-bucket", {}, { provider: euWest });
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+us_east = aws.Provider("us-east", region="us-east-1", profile="prod-account")
+eu_west = aws.Provider("eu-west", region="eu-west-1", profile="prod-account")
+
+us_bucket = aws.s3.BucketV2("us-bucket", opts=pulumi.ResourceOptions(provider=us_east))
+eu_bucket = aws.s3.BucketV2("eu-bucket", opts=pulumi.ResourceOptions(provider=eu_west))
+```
+
+```go Go
+package main
+
+import (
+    "github.com/pulumi/pulumi-aws/sdk/v7/go/aws"
+    "github.com/pulumi/pulumi-aws/sdk/v7/go/aws/s3"
+    "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+)
+
+func main() {
+    pulumi.Run(func(ctx *pulumi.Context) error {
+        usEast, _ := aws.NewProvider(ctx, "us-east", &aws.ProviderArgs{
+            Region:  pulumi.String("us-east-1"),
+            Profile: pulumi.String("prod-account"),
+        })
+
+        euWest, _ := aws.NewProvider(ctx, "eu-west", &aws.ProviderArgs{
+            Region:  pulumi.String("eu-west-1"),
+            Profile: pulumi.String("prod-account"),
+        })
+
+        s3.NewBucketV2(ctx, "us-bucket", nil, pulumi.Provider(usEast))
+        s3.NewBucketV2(ctx, "eu-bucket", nil, pulumi.Provider(euWest))
+        return nil
+    })
+}
+```
+
+</CodeGroup>
+
+To assume a different IAM role per provider — for example, when deploying across multiple AWS organization accounts:
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const devProvider = new aws.Provider("dev", {
+    region: "us-east-1",
+    assumeRoles: [{
+        roleArn: "arn:aws:iam::111122223333:role/DeployRole",
+        sessionName: "pulumi-dev",
+    }],
+});
+
+const prodProvider = new aws.Provider("prod", {
+    region: "us-east-1",
+    assumeRoles: [{
+        roleArn: "arn:aws:iam::444455556666:role/DeployRole",
+        sessionName: "pulumi-prod",
+    }],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+dev_provider = aws.Provider("dev",
+    region="us-east-1",
+    assume_roles=[aws.ProviderAssumeRoleArgs(
+        role_arn="arn:aws:iam::111122223333:role/DeployRole",
+        session_name="pulumi-dev",
+    )],
+)
+
+prod_provider = aws.Provider("prod",
+    region="us-east-1",
+    assume_roles=[aws.ProviderAssumeRoleArgs(
+        role_arn="arn:aws:iam::444455556666:role/DeployRole",
+        session_name="pulumi-prod",
+    )],
+)
+```
+
+```go Go
+package main
+
+import (
+    "github.com/pulumi/pulumi-aws/sdk/v7/go/aws"
+    "github.com/pulumi/pulumi/sdk/v3/go/pulumi"
+)
+
+func main() {
+    pulumi.Run(func(ctx *pulumi.Context) error {
+        devProvider, _ := aws.NewProvider(ctx, "dev", &aws.ProviderArgs{
+            Region: pulumi.String("us-east-1"),
+            AssumeRoles: aws.ProviderAssumeRoleArray{
+                &aws.ProviderAssumeRoleArgs{
+                    RoleArn:     pulumi.String("arn:aws:iam::111122223333:role/DeployRole"),
+                    SessionName: pulumi.String("pulumi-dev"),
+                },
+            },
+        })
+        _ = devProvider
+        return nil
+    })
+}
+```
+
+</CodeGroup>
+
+## `assumeRoles` — v6 to v7
+
+In Pulumi AWS provider v6, `assumeRole` was a single object. In v7 it was renamed to `assumeRoles` and changed to a **list**, enabling chained role assumption. Update any existing code that uses the old singular form.
+
+<CodeGroup>
+
+```typescript v6 (old)
+const provider = new aws.Provider("provider", {
+    region: "us-east-1",
+    // v6: single object, singular key
+    assumeRole: {
+        roleArn: "arn:aws:iam::123456789012:role/MyRole",
+        sessionName: "pulumi-session",
+    },
+});
+```
+
+```typescript v7 (new)
+const provider = new aws.Provider("provider", {
+    region: "us-east-1",
+    // v7: list of objects, plural key
+    assumeRoles: [{
+        roleArn: "arn:aws:iam::123456789012:role/MyRole",
+        sessionName: "pulumi-session",
+    }],
+});
+```
+
+</CodeGroup>
+
+## `defaultTags` example
+
+Tags set here are merged onto every resource managed by the provider. Per-resource `tags` values take precedence over the defaults for matching keys.
+
+<CodeGroup>
+
+```typescript TypeScript
+const provider = new aws.Provider("tagged-provider", {
+    region: "us-east-1",
+    defaultTags: {
+        tags: {
+            Environment: "production",
+            ManagedBy: "pulumi",
+            Team: "platform",
+        },
+    },
+});
+```
+
+```python Python
+provider = aws.Provider("tagged-provider",
+    region="us-east-1",
+    default_tags=aws.ProviderDefaultTagsArgs(
+        tags={
+            "Environment": "production",
+            "ManagedBy": "pulumi",
+            "Team": "platform",
+        },
+    ),
+)
+```
+
+```go Go
+provider, _ := aws.NewProvider(ctx, "tagged-provider", &aws.ProviderArgs{
+    Region: pulumi.String("us-east-1"),
+    DefaultTags: &aws.ProviderDefaultTagsArgs{
+        Tags: pulumi.StringMap{
+            "Environment": pulumi.String("production"),
+            "ManagedBy":   pulumi.String("pulumi"),
+            "Team":        pulumi.String("platform"),
+        },
+    },
+})
+```
+
+</CodeGroup>
+
+<Warning>
+  `accessKey` and `secretKey` are stored as encrypted secrets in Pulumi state. Avoid committing them directly in source code. Use environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`), shared credential files, or Pulumi ESC instead.
+</Warning>
+
+<Tip>
+  To use EC2 instance metadata credentials (for example, from an IAM instance profile), set `skipMetadataApiCheck: false` on the provider. As of v3.28.1, the provider disables the metadata API check by default.
+</Tip>

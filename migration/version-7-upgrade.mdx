@@ -1,0 +1,662 @@
+---
+title: "Migrate to Pulumi AWS Provider v7"
+description: "Step-by-step guide to upgrading from Pulumi AWS Provider v6 to v7, covering breaking changes, removed resources, and enhanced region support."
+---
+
+Version 7.0.0 of the Pulumi AWS Provider is a major release that introduces enhanced region support, IAM role chaining, unified S3 resources, and several breaking changes aligned with the upstream Terraform AWS provider. This guide covers everything you need to know to migrate from v6.x to v7.0.0.
+
+## Prerequisites
+
+<Warning>
+Before upgrading to v7.0.0, first upgrade to the latest available v6.x release of the provider. Skipping this step may cause unexpected behavior during migration.
+</Warning>
+
+Run `pulumi preview` on your latest v6.x code and confirm that:
+
+- Your preview completes without errors or unexpected changes.
+- There are no deprecation warnings related to the changes described in this guide.
+
+It is also recommended that you run `pulumi up --refresh` before upgrading to ensure your Pulumi state is up to date with the actual AWS resources.
+
+If you use version constraints in `package.json` or `requirements.txt`, update them to allow the `7.x` series and install the new version.
+
+<CodeGroup>
+
+```json package.json (before)
+{
+  "dependencies": {
+    "@pulumi/aws": "^6.92.0"
+  }
+}
+```
+
+```json package.json (after)
+{
+  "dependencies": {
+    "@pulumi/aws": "^7.0.0"
+  }
+}
+```
+
+</CodeGroup>
+
+## Performing the upgrade
+
+<Steps>
+  <Step title="Update the provider version">
+    Update your dependency version constraint to `^7.0.0` and install:
+
+    <CodeGroup>
+
+    ```bash npm
+    npm install @pulumi/aws@^7.0.0
+    ```
+
+    ```bash pip
+    pip install pulumi-aws --upgrade
+    ```
+
+    </CodeGroup>
+  </Step>
+  <Step title="Update your code for breaking changes">
+    Review the breaking changes listed in this guide and update your Pulumi programs accordingly before running the upgrade. Pay special attention to provider role chaining, S3 bucket properties, and any resources you use.
+  </Step>
+  <Step title="Run pulumi up with --refresh and --run-program">
+    After upgrading the library, run Pulumi with both the `--refresh` and `--run-program` flags:
+
+    ```bash
+    pulumi up --refresh --run-program
+    ```
+
+    Both flags are required:
+    - `--refresh` migrates your state to the new schema so no spurious diffs are calculated.
+    - `--run-program` ensures that the refresh uses the **new** provider version rather than the old one. Without this flag, `--refresh` would use the old provider.
+  </Step>
+  <Step title="Verify no unexpected diff">
+    Confirm that the update shows no unexpected resource changes. You may see a refresh diff as Pulumi migrates state to the new structure, but you should not see an update diff for unchanged resources.
+  </Step>
+</Steps>
+
+## Removed provider arguments
+
+<Warning>
+Remove the following endpoint overrides from your provider configuration. They are no longer supported and will cause errors if present.
+</Warning>
+
+- `endpoints.opsworks` — removed following AWS OpsWorks Stacks End of Life.
+- `endpoints.simpledb` and `endpoints.sdb` — removed due to the removal of Amazon SimpleDB support.
+- `endpoints.worklink` — removed due to the removal of Amazon Worklink support.
+
+## Enhanced region support
+
+Version 7.0.0 adds a `region` property to most resources, making it significantly easier to manage infrastructure across AWS regions without requiring multiple provider configurations. You can now set the region per resource rather than instantiating a separate `Provider` for each region.
+
+<Note>
+If you use the `aws.s3.Bucket` or `aws.s3.getBucket` resources, be aware that `region` now refers to the enhanced region support field. Use `bucketRegion` to get the region of the bucket itself.
+</Note>
+
+## Provider role chaining
+
+v7 adds support for IAM role chaining by changing the `assumeRole` property to `assumeRoles` (a list), allowing multiple roles to be chained in sequence.
+
+<Warning>
+If you set `assumeRole` on a `Provider`, you must rename it to `assumeRoles` and wrap the value in an array. This is a breaking change.
+</Warning>
+
+<CodeGroup>
+
+```typescript TypeScript (before v7)
+import * as aws from '@pulumi/aws';
+
+const provider = new aws.Provider("provider", {
+    assumeRole: { roleArn: baseRole.arn },
+});
+```
+
+```typescript TypeScript (v7+)
+import * as aws from '@pulumi/aws';
+
+const provider = new aws.Provider("provider", {
+    assumeRoles: [{ roleArn: baseRole.arn }],
+});
+```
+
+</CodeGroup>
+
+If you use stack config instead of code, update `aws:assumeRole` to `aws:assumeRoles`:
+
+<CodeGroup>
+
+```yaml Pulumi.yaml (before v7)
+config:
+  aws:assumeRole:
+    roleArn: arn:aws:iam::12345678912/someRole
+```
+
+```yaml Pulumi.yaml (v7+)
+config:
+  aws:assumeRoles:
+    - roleArn: arn:aws:iam::12345678912/someRole
+```
+
+</CodeGroup>
+
+## S3 Bucket/BucketV2 changes
+
+In v6, `s3.Bucket` and `s3.BucketV2` represented different implementations. In v7, both resources now point to the same upstream implementation (the latest Terraform S3 Bucket resource). This unification introduces SDK-level breaking changes to `s3.Bucket`.
+
+### Breaking changes to `s3.Bucket`
+
+<Warning>
+The following `s3.Bucket` property changes are breaking and require code updates before running the upgrade.
+</Warning>
+
+- `loggings` (array) has been renamed to `logging` (single object).
+- `website.routingRules` now only accepts a `string` value (JSON-encoded), not an array of objects.
+
+<CodeGroup>
+
+```typescript TypeScript (before v7)
+import * as aws from '@pulumi/aws';
+
+const migrationBucket = new aws.s3.Bucket("migrationBucket", {
+    loggings: [{
+        targetBucket: loggingBucket.bucket,
+        targetPrefix: "/log",
+    }],
+    website: {
+        indexDocument: "index.html",
+        errorDocument: "error.html",
+        routingRules: [{
+            Condition: { KeyPrefixEquals: "docs" },
+            Redirect: { ReplaceKeyPrefixWith: "documents/" }
+        }],
+    },
+});
+```
+
+```typescript TypeScript (v7+)
+import * as aws from '@pulumi/aws';
+
+const migrationBucket = new aws.s3.Bucket("migrationBucket", {
+    logging: {
+        targetBucket: loggingBucket.bucket,
+        targetPrefix: "/log",
+    },
+    website: {
+        indexDocument: "index.html",
+        errorDocument: "error.html",
+        routingRules: `[{
+          "Condition": { "KeyPrefixEquals": "docs" },
+          "Redirect": { "ReplaceKeyPrefixWith": "documents/" }
+        }]`,
+    },
+});
+```
+
+</CodeGroup>
+
+### BucketV2 aliases
+
+New non-`V2` resource names are available as aliases for the `V2` bucket configuration resources. The `V2` variants will be removed in v8.
+
+| Deprecated (V2)                                    | Replacement                                     |
+| -------------------------------------------------- | ----------------------------------------------- |
+| `aws.s3.BucketAccelerateConfigurationV2`           | `aws.s3.BucketAccelerateConfiguration`          |
+| `aws.s3.BucketRequestPaymentConfigurationV2`       | `aws.s3.BucketRequestPaymentConfiguration`      |
+| `aws.s3.BucketAclV2`                              | `aws.s3.BucketAcl`                              |
+| `aws.s3.BucketCorsConfigurationV2`                | `aws.s3.BucketCorsConfiguration`                |
+| `aws.s3.BucketLifecycleConfigurationV2`           | `aws.s3.BucketLifecycleConfiguration`           |
+| `aws.s3.BucketLoggingV2`                          | `aws.s3.BucketLogging`                          |
+| `aws.s3.BucketObjectLockConfigurationV2`          | `aws.s3.BucketObjectLockConfiguration`          |
+| `aws.s3.BucketServerSideEncryptionConfigurationV2`| `aws.s3.BucketServerSideEncryptionConfiguration`|
+| `aws.s3.BucketVersioningV2`                       | `aws.s3.BucketVersioning`                       |
+| `aws.s3.BucketWebsiteConfigurationV2`             | `aws.s3.BucketWebsiteConfiguration`             |
+
+## Tags changes
+
+In v6, Pulumi-level tag customizations caused the `tags` property to return _all_ tags on a resource, including provider-level default tags. In v7, this behavior has been removed to align with the upstream Terraform provider.
+
+<Warning>
+If your code reads `tags` to get all tags (including default tags), you must update it to use `tagsAll` instead.
+</Warning>
+
+<CodeGroup>
+
+```typescript TypeScript (before v7)
+const provider = new aws.Provider('provider', {
+    defaultTags: { tags: { globalTag: 'value' } }
+});
+const bucket = new aws.s3.Bucket('my-bucket', {
+    tags: { resourceTag: 'value' }
+}, { provider });
+
+// In v6, bucket.tags contained both globalTag AND resourceTag
+export const tags = bucket.tags;
+```
+
+```typescript TypeScript (v7+)
+const provider = new aws.Provider('provider', {
+    defaultTags: { tags: { globalTag: 'value' } }
+});
+const bucket = new aws.s3.Bucket('my-bucket', {
+    tags: { resourceTag: 'value' }
+}, { provider });
+
+// In v7, bucket.tags only contains resource-level tags
+export const tags = bucket.tags;
+// Use tagsAll to get all tags including defaults
+export const allTags = bucket.tagsAll;
+```
+
+</CodeGroup>
+
+## Key resource breaking changes
+
+The sections below cover the most impactful per-resource changes. See the full list of all resource changes in the accordion section below.
+
+### `aws.apigateway.Deployment`
+
+<Warning>
+The `stageName`, `stageDescription`, and `canarySettings` properties have been removed. You must use `aws.apigateway.Stage` explicitly.
+</Warning>
+
+The `invokeUrl` and `executionArn` outputs have also been removed from `Deployment`; read them from `aws.apigateway.Stage` instead.
+
+<CodeGroup>
+
+```typescript TypeScript (before v7)
+const exampleDeployment = new aws.apigateway.Deployment("example", {
+    restApi: exampleRestApi.id,
+    stageName: "prod",
+});
+
+export const invokeUrl = exampleDeployment.invokeUrl;
+export const executionArn = exampleDeployment.executionArn;
+```
+
+```typescript TypeScript (v7+)
+const exampleDeployment = new aws.apigateway.Deployment("example", {
+    restApi: exampleRestApi.id,
+});
+
+const prodStage = new aws.apigateway.Stage("prod", {
+    stageName: "prod",
+    restApi: exampleRestApi.id,
+    deployment: exampleDeployment.id,
+});
+
+export const invokeUrl = prodStage.invokeUrl;
+export const executionArn = prodStage.executionArn;
+```
+
+</CodeGroup>
+
+If you previously relied on an implicitly created stage, import it before running `pulumi up`:
+
+```bash
+pulumi import aws:apigateway/stage:Stage prod restApi/stageName
+```
+
+### `aws.batch.JobQueue`
+
+Remove `computeEnvironments` and replace it with `computeEnvironmentOrders`. Pulumi will migrate existing state automatically, but you must update your code.
+
+<CodeGroup>
+
+```typescript TypeScript (before v7)
+const example = new aws.batch.JobQueue("example", {
+    computeEnvironments: [exampleComputeEnvironment.arn],
+    name: "patagonia",
+    priority: 1,
+    state: "ENABLED",
+});
+```
+
+```typescript TypeScript (v7+)
+const example = new aws.batch.JobQueue("example", {
+    computeEnvironmentOrders: [{
+        computeEnvironment: exampleComputeEnvironment.arn,
+        order: 0,
+    }],
+    name: "patagonia",
+    priority: 1,
+    state: "ENABLED",
+});
+```
+
+</CodeGroup>
+
+### `aws.ec2.Instance`
+
+<Warning>
+`userData` is no longer hashed and is now stored in plaintext. Do not include passwords or sensitive information in `userData`.
+</Warning>
+
+- `userData` is now stored in clear text. Use `userDataBase64` if you need to provide base64-encoded user data.
+- `cpuCoreCount` and `cpuThreadsPerCore` have been removed. Use the `cpuOptions` block with `coreCount` and `threadsPerCore` instead.
+
+### `aws.eks.Cluster`
+
+- `certificateAuthorities` has been removed. Use `certificateAuthority` instead.
+- `defaultAddonsToRemoves` (a Pulumi-only patch) has been removed. Use the upstream `bootstrapSelfManagedAddons` field set to `false`, then add platform addons as `aws.eks.Addon` resources.
+
+### `aws.elasticache.ReplicationGroup`
+
+- `authTokenUpdateStrategy` no longer has a default value. If `authToken` is set, `authTokenUpdateStrategy` must also be explicitly set.
+- The `engine` value must now be entirely lowercase. Uppercase values are no longer accepted.
+
+### `aws.s3.Bucket`
+
+`bucketRegion` has been added as a new output property. Use `bucketRegion` to get the bucket's region. The `region` property now refers to Enhanced Region Support.
+
+## All resource and function changes
+
+<AccordionGroup>
+  <Accordion title="Function changes">
+    **`aws.ec2.getAmi`** — When `mostRecent = true`, you must now include an `owner` or a `filter` with `image-id` or `owner-id`. Omitting both previously showed a warning; now it causes an error.
+
+    **`aws.batch.getComputeEnvironment`** — `computeEnvironmentName` has been renamed to `name`.
+
+    **`aws.ecs.getTaskDefinition`** — Remove `inferenceAccelerator` (Amazon Elastic Inference reached end of life).
+
+    **`aws.ecs.getTaskExecution`** — Remove `inferenceAcceleratorOverrides` (Amazon Elastic Inference reached end of life).
+
+    **`aws.elbv2.getListenerRule`** — The following must be treated as lists of objects rather than objects: `action.authenticateCognito`, `action.authenticateOidc`, `action.fixedResponse`, `action.forward`, `action.forward.stickiness`, `action.redirect`, `condition.hostHeader`, `condition.httpHeader`, `condition.httpRequest_method`, `condition.pathPattern`, `condition.queryString`, `condition.sourceIp`. When referencing them, include an index (e.g. `action[0].authenticateCognito[0].scope`).
+
+    **`aws.globalaccelerator.getAccelerator`** — `id` is now output only and can no longer be set.
+
+    **`aws.identitystore.getGroup`** — Remove `filter`. Use `alternateIdentifier` instead.
+
+    **`aws.identitystore.getUser`** — Remove `filter`. Use `alternateIdentifier` instead.
+
+    **`aws.kms.getSecret`** — This data source's functionality was removed in v3.0.0. Remove all usage.
+
+    **`aws.launch.getTemplate`** — Remove `elasticGpuSpecifications` and `elasticInferenceAccelerator` (both services reached end of life).
+
+    **`aws.opensearch.getDomain`** — Remove `kibanaEndpoint`. Use the `/_dashboards/` path on the domain endpoint instead.
+
+    **`aws.opensearchserverless.getSecurityConfig`** — Treat `samlOptions` as a list. Reference as `samlOptions[0].sessionTimeout`.
+
+    **`aws.quicksight.getDataSet`** — Remove `tagsAll`.
+
+    **`aws.getRegion`** — `name` is deprecated. Use `region` instead.
+
+    **`aws.s3.getBucket`** — Use `bucketRegion` instead of `region` to get the bucket's region.
+
+    **`aws.service.getDiscoveryService`** — Remove `tagsAll`.
+
+    **`aws.servicequotas.getTemplates`** — `region` is deprecated. Use `awsRegion` instead.
+
+    **`aws.ssmincidents.getReplicationSet`** — `region` is deprecated. Use `regions` instead.
+
+    **`aws.vpc.getEndpointService`** — `region` is deprecated. Use `serviceRegion` instead.
+
+    **`aws.vpc.getPeeringConnection`** — `region` is deprecated. Use `requesterRegion` instead.
+  </Accordion>
+  <Accordion title="Resource changes">
+    **`aws.apigateway.Account`** — Remove `resetOnDelete`. The destroy operation now always resets API Gateway account settings. To retain the previous behavior, use the [`retainOnDelete` resource option](https://www.pulumi.com/docs/iac/concepts/options/retainondelete/).
+
+    **`aws.apigateway.Deployment`** — `stageName`, `stageDescription`, `canarySettings`, `invokeUrl`, and `executionArn` have been removed. Use `aws.apigateway.Stage` instead.
+
+    **`aws.appflow.ConnectorProfile`** — Importing now uses the `name` of the Connector Profile.
+
+    **`aws.appflow.Flow`** — Importing now uses the `name` of the Flow.
+
+    **`aws.batch.ComputeEnvironment`** — `computeEnvironmentName` renamed to `name`; `computeEnvironmentNamePrefix` renamed to `namePrefix`.
+
+    **`aws.batch.JobQueue`** — `computeEnvironments` removed. Use `computeEnvironmentOrders` instead.
+
+    **`aws.bedrockmodel.InvocationLoggingConfiguration`** — Treat `loggingConfig`, `loggingConfig.cloudwatchConfig`, `loggingConfig.cloudwatchConfig.largeDataDeliveryS3Config`, and `loggingConfig.s3Config` as lists. Include an index when referencing (e.g. `loggingConfig[0].cloudwatchConfig[0].logGroupName`).
+
+    **`aws.cloudformation.StackSetInstance`** — `region` deprecated. Use `stackSetInstanceRegion` instead.
+
+    **`aws.cloudfront.KeyValueStore`** — Use `name` for the resource name; `id` now represents the AWS API ID.
+
+    **`aws.cloudfront.ResponseHeadersPolicy`** — Do not set `etag`; it is now computed only.
+
+    **`aws.cognito.UserInGroup`** — `id` is now a comma-delimited string of `userPoolId`, `groupName`, and `username`.
+
+    **`aws.cfg.AggregateAuthorization`** — `region` deprecated. Use `authorizedAwsRegion` instead.
+
+    **`aws.rds.Instance`** — `name` (deprecated in v6) has been removed. Use `dbName`. Do not use `characterSetName` with `replicateSourceDb`, `restoreToPointInTime`, `s3Import`, or `snapshotIdentifier`.
+
+    **`aws.dms.Endpoint`** — `s3Settings` removed. Use `aws.dms.S3Endpoint` resource instead.
+
+    **`aws.directconnect.GatewayAssociation`** — Remove `vpnGatewayId`. Use `associatedGatewayId` instead.
+
+    **`aws.directconnect.HostedConnection`** — `region` deprecated. Use `connectionRegion` instead.
+
+    **`aws.ecs.TaskDefinition`** — Remove `inferenceAccelerator` (Amazon Elastic Inference reached end of life).
+
+    **`aws.ec2.Eip`** — Remove `vpc`. Use `domain` instead.
+
+    **`aws.eks.Addon`** — Remove `resolveConflicts`. Use `resolveConflictsOnCreate` and `resolveConflictsOnUpdate` instead.
+
+    **`aws.eks.Cluster`** — `certificateAuthorities` removed. Use `certificateAuthority`. `defaultAddonsToRemoves` removed; use `bootstrapSelfManagedAddons` instead.
+
+    **`aws.elasticache.ReplicationGroup`** — `authTokenUpdateStrategy` has no default. `engine` must be lowercase.
+
+    **`aws.elasticache.User`** — `engine` must be lowercase.
+
+    **`aws.elasticache.UserGroup`** — `engine` must be lowercase.
+
+    **`aws.ec2.FlowLog`** — Remove `logGroupName`. Use `logDestination` instead.
+
+    **`aws.guardduty.Detector`** — `datasources` is deprecated. Use `awsGuarddutyDetectorFeature` resource instead.
+
+    **`aws.guardduty.OrganizationConfiguration`** — Remove `autoEnable`. `autoEnableOrganizationMembers` is now required. `datasources` is deprecated.
+
+    **`aws.ec2.Instance`** — `userData` is now plaintext. `cpuCoreCount` and `cpuThreadsPerCore` removed; use `cpuOptions` block.
+
+    **`aws.kinesis.AnalyticsApplication`** — Deprecated. Use `aws.kinesisanalyticsv2.Application` instead.
+
+    **`aws.ec2.LaunchTemplate`** — Remove `elasticGpuSpecifications` and `elasticInferenceAccelerator`.
+
+    **`aws.lb.Listener`** — For `mutualAuthentication`, `advertiseTrustStoreCaNames`, `ignoreClientCertificateExpiry`, and `trustStoreArn` can only be set when `mode` is `verify`. `trustStoreArn` is required when `mode` is `verify`.
+
+    **`aws.mediastore.Container`** — Deprecated. AWS Elemental MediaStore is being discontinued November 13, 2025. Migrate to Amazon S3 or AWS Elemental MediaPackage.
+
+    **`aws.mediastore.ContainerPolicy`** — Deprecated. Same reason as above.
+
+    **`aws.networkmanager.CoreNetwork`** — Remove `basePolicyRegion`. Use `basePolicyRegions` instead.
+
+    **`aws.opensearch.Domain`** — Remove `kibanaEndpoint`. Use the `/_dashboards/` path instead.
+
+    **`aws.opensearch.ServerlessSecurityConfig`** — Treat `samlOptions` as a list. Reference as `samlOptions[0].sessionTimeout`.
+
+    **`aws.paymentcryptography.Key`** — Treat `keyAttributes` and `keyAttributes.keyModesOfUse` as lists. Reference as `keyAttributes[0].keyModesOfUse[0].decrypt`.
+
+    **`aws.redshift.Cluster`** — `encrypted` now defaults to `true`. `publiclyAccessible` now defaults to `false`. Remove `snapshotCopy` (use `awsRedshiftSnapshotCopy` resource) and `logging` (use `awsRedshiftLogging` resource). `clusterPublicKey`, `clusterRevisionNumber`, and `endpoint` are now read-only.
+
+    **`aws.redshift.ServiceAccount`** — Removed. Use a service principal name in IAM policies instead.
+
+    **`aws.rekognition.StreamProcessor`** — Treat `regionsOfInterest.boundingBox` as a list. Reference as `regionsOfInterest[0].boundingBox[0].height`.
+
+    **`aws.resiliencehub.ResiliencyPolicy`** — Treat `policy`, `policy.az`, `policy.hardware`, `policy.software`, and `policy.region` as lists. Reference as `policy[0].az[0].rpo`.
+
+    **`aws.s3.Bucket`** — Use `bucketRegion` for the bucket's region; `region` now refers to Enhanced Region Support.
+
+    **`aws.sagemaker.ImageVersion`** — `id` is now a comma-delimited string of `imageName` and `version`.
+
+    **`aws.sagemaker.NotebookInstance`** — Remove `acceleratorTypes`. Use `instanceType` with Inferentia instead.
+
+    **`aws.servicequotas.Template`** — `region` deprecated. Use `awsRegion` instead.
+
+    **`aws.ec2.SpotInstanceRequest`** — Remove `blockDurationMinutes`.
+
+    **`aws.ssm.Association`** — Remove `instanceId`. Use `targets` instead.
+
+    **`aws.ssmincidents.ReplicationSet`** — `region` deprecated. Use `regions` instead.
+
+    **`aws.verifiedpermissions.Schema`** — Treat `definition` as a list. Reference as `definition[0].value`.
+
+    **`aws.wafv2.WebAcl`** — The default for `rule.statement.managedRuleGroupStatement.managedRuleGroupConfigs.awsManagedRulesBotControlRuleSet.enableMachineLearning` is now `false`. Set explicitly to `true` to retain previous behavior.
+  </Accordion>
+</AccordionGroup>
+
+## ECR credentials migration
+
+The Pulumi-only `aws.ecr.getCredentials` function has been removed. Use the upstream `aws.ecr.getAuthorizationToken` instead.
+
+<CodeGroup>
+
+```typescript TypeScript (before v7)
+const credentials = await aws.ecr.getCredentials({ registryId: registryId });
+const decodedCredentials = Buffer.from(credentials.authorizationToken, "base64").toString();
+const [username, password] = decodedCredentials.split(":");
+```
+
+```typescript TypeScript (v7+)
+const credentials = await aws.ecr.getAuthorizationToken({ registryId: registryId });
+const username = credentials.userName;
+const password = pulumi.secret(credentials.password);
+```
+
+</CodeGroup>
+
+## Node.js SDK enum removals
+
+The following changes only affect users of the Node.js/TypeScript SDK. Standalone exported constants (the old pattern) have been removed in favor of namespaced enum values.
+
+<AccordionGroup>
+  <Accordion title="ec2 enum removals">
+    - `InstanceTypes.*` → use `InstanceType.*`
+    - `InstancePlatforms.LinuxUnixPlatform` → `InstancePlatform.LinuxUnix`
+    - `InstancePlatforms.WindowsPlatform` → `InstancePlatform.Windows`
+    - `SpreadStrategy` → `PlacementStrategy.Spread`
+    - `ClusterStrategy` → `PlacementStrategy.Cluster`
+    - `AllProtocols` → `ProtocolType.All`
+    - `TCPProtocol` → `ProtocolType.TCP`
+    - `UDPProtocol` → `ProtocolType.UDP`
+    - `ICMPProtocol` → `ProtocolType.ICMP`
+    - `Tenancies.DefaultTenancy` → `Tenancy.Default`
+    - `Tenancies.DedicatedTenancy` → `Tenancy.Dedicated`
+
+    **Removed `ec2.InstanceType` enum values** (hardware no longer available):
+    - `U_12TB1_METAL`, `U_6TB1_METAL`, `U_9TB1_METAL`, `HS1_8_X_LARGE`, `M5AS_X_LARGE`, `C7A_METAL`, `M7A_METAL`, `CC2_8_X_LARGE`, `G2_2_X_LARGE`, `G2_8_X_LARGE`
+  </Accordion>
+  <Accordion title="iam enum removals">
+    - `ManagedPolicies.*` → use `ManagedPolicy.*`
+
+    Specific renamed/removed values:
+    - `ManagedPolicy.AWS_CODE_PIPELINE_READ_ONLY_ACCESS` → `ManagedPolicy.CodePipeline_ReadOnlyAccess`
+    - `ManagedPolicy.AWS_CONFIG_ROLE` → `ManagedPolicy.AWS_ConfigRole`
+    - `ManagedPolicy.AWS_DATA_PIPELINE_ROLE` — removed (no replacement)
+    - `ManagedPolicy.AWS_ELASTIC_BEANSTALK_FULL_ACCESS` → `ManagedPolicy.AdministratorAccessAWSElasticBeanstalk`
+    - `ManagedPolicy.AWS_LAMBDA_FULL_ACCESS` → `ManagedPolicy.LambdaFullAccess`
+    - `ManagedPolicy.AWS_LAMBDA_READ_ONLY_ACCESS` → `ManagedPolicy.LambdaReadOnlyAccess`
+    - `ManagedPolicy.AWS_OPS_WORKS_FULL_ACCESS` → `ManagedPolicy.OpsWorks_FullAccess`
+    - `ManagedPolicy.AMAZON_EC2_CONTAINER_SERVICE_FULL_ACCESS` → `ManagedPolicy.AmazonECSFullAccess`
+    - `ManagedPolicy.AMAZON_ELASTIC_TRANSCODER_FULL_ACCESS` → `ManagedPolicy.ElasticTranscoder_FullAccess`
+    - `ManagedPolicy.SERVICE_CATALOG_ADMIN_FULL_ACCESS` → `ManagedPolicy.AWSServiceCatalogAdminFullAccess`
+
+    Values removed due to deprecated AWS services (Chime, OpsWorks, WorkLink):
+    `AmazonChimeFullAccess`, `AmazonChimeReadOnly`, `AmazonChimeSDK`, `AWSOpsWorksCMInstanceProfileRole`, `AWSOpsWorksCMServiceRole`, `AWSOpsWorksCloudWatchLogs`, `AWSOpsWorksInstanceRegistration`, `AWSOpsWorksRegisterCLI_EC2`, `AWSOpsWorksRegisterCLI_OnPremises`, `OpsWorks_FullAccess`, `WorkLinkServiceRolePolicy`
+  </Accordion>
+  <Accordion title="lambda enum removals">
+    - `DotnetCore2d1Runtime` → `Runtime.DotnetCore2d1`
+    - `DotnetCore3d1Runtime` → `Runtime.DotnetCore3d1`
+    - `Go1dxRuntime` → `Runtime.Go1dx`
+    - `Java8Runtime` → `Runtime.Java8`
+    - `Java11Runtime` → `Runtime.Java11`
+    - `Ruby2d5Runtime` → `Runtime.Ruby2d5`
+    - `Ruby2d7Runtime` → `Runtime.Ruby2d7`
+    - `NodeJS10dXRuntime` → `Runtime.NodeJS10dX`
+    - `NodeJS12dXRuntime` → `Runtime.NodeJS12dX`
+    - `Python2d7Runtime` → `Runtime.Python2d7`
+    - `Python3d6Runtime` → `Runtime.Python3d6`
+    - `Python3d7Runtime` → `Runtime.Python3d7`
+    - `Python3d8Runtime` → `Runtime.Python3d8`
+    - `CustomRuntime` → `Runtime.Custom`
+  </Accordion>
+  <Accordion title="Other SDK enum removals">
+    **applicationloadbalancing:**
+    - `Ipv4` → `IpAddressType.Ipv4`
+    - `Dualstack` → `IpAddressType.Dualstack`
+    - `ApplicationLoadBalancer` → `LoadBalancerType.Application`
+    - `NetworkLoadBalancer` → `LoadBalancerType.Network`
+
+    **rds:**
+    - `InstanceTypes.*` → `InstanceType.*`
+    - `StorageTypes.Standard` → `StorageType.Standard`
+    - `StorageTypes.GP2` → `StorageType.GP2`
+    - `StorageTypes.Io1` → `StorageType.IO1`
+    - `ProvisionedEngine` → `EngineMode.Provisioned`
+    - `ServerlessEngine` → `EngineMode.Serverless`
+    - `AuroraEngine` → `EngineType.Aurora`
+    - `AuroraMysqlEngine` → `EngineType.AuroraMysql`
+    - `AuroraPostgresqlEngine` → `EngineType.AuroraPostgresql`
+
+    **route53:**
+    - `RecordTypes.A` → `RecordType.A`
+    - `RecordTypes.AAAA` → `RecordType.AAAA`
+    - `RecordTypes.CNAME` → `RecordType.CNAME`
+    - `RecordTypes.MX` → `RecordType.MX`
+    - `RecordTypes.NS` → `RecordType.NS`
+    - `RecordTypes.TXT` → `RecordType.TXT`
+    (and all other `RecordTypes.*` → `RecordType.*`)
+
+    **s3:**
+    - `PrivateAcl` → `CannedAcl.Private`
+    - `PublicReadAcl` → `CannedAcl.PublicRead`
+    - `PublicReadWriteAcl` → `CannedAcl.PublicReadWrite`
+    - `AuthenticatedReadAcl` → `CannedAcl.AuthenticatedRead`
+    - `BucketOwnerReadAcl` → `CannedAcl.BucketOwnerRead`
+    - `LogDeliveryWriteAcl` → `CannedAcl.LogDeliveryWrite`
+
+    **ssm:**
+    - `StringParameter` → `ParameterType.String`
+    - `StringListParameter` → `ParameterType.StringList`
+    - `SecureStringParameter` → `ParameterType.SecureString`
+
+    **region:** All standalone region constants (e.g. `USEast1Region`) are removed. Use `Region.USEast1` etc.
+
+    **ecr:** The `rules` property of `ecr.LifecyclePolicyDocument` changed from `ecr.PolicyRule[]` to `pulumi.Input<pulumi.Input<ecr.PolicyRule>[]>`. Use an intermediate typed array and assign it.
+  </Accordion>
+</AccordionGroup>
+
+## Deprecations
+
+### Amazon Elastic Transcoder
+
+Amazon Elastic Transcoder will be discontinued on **November 13, 2025**. The following resources are deprecated and will be removed in a future major release:
+
+- `aws.elastictranscoder.Pipeline`
+- `aws.elastictranscoder.Preset`
+
+Migrate to [AWS Elemental MediaConvert](https://aws.amazon.com/blogs/media/migrating-workflows-from-amazon-elastic-transcoder-to-aws-elemental-mediaconvert/).
+
+### CloudWatch Evidently
+
+AWS will end support for CloudWatch Evidently on **October 17, 2025**. The following resources are deprecated and will be removed in a future major release:
+
+- `aws.evidently.Feature`
+- `aws.evidently.Launch`
+- `aws.evidently.Project`
+- `aws.evidently.Segment`
+
+Migrate to [AWS AppConfig Feature Flags](https://aws.amazon.com/blogs/mt/using-aws-appconfig-feature-flags/).
+
+### S3 global endpoint
+
+Support for the global S3 endpoint (`s3UsEast1RegionalEndpoint = "legacy"`) is deprecated and will be removed in v8. To prepare, either remove `s3UsEast1RegionalEndpoint` from your provider configuration or set it to `"regional"` and verify your deployment.
+
+## Removed services
+
+### OpsWorks Stacks
+
+AWS OpsWorks Stacks reached End of Life. All `aws.opsworks.*` resources have been removed:
+
+`aws.opsworks.Application`, `aws.opsworks.CustomLayer`, `aws.opsworks.EcsClusterLayer`, `aws.opsworks.GangliaLayer`, `aws.opsworks.HaproxyLayer`, `aws.opsworks.Instance`, `aws.opsworks.JavaAppLayer`, `aws.opsworks.MemcachedLayer`, `aws.opsworks.MysqlLayer`, `aws.opsworks.NodejsAppLayer`, `aws.opsworks.Permission`, `aws.opsworks.PhpAppLayer`, `aws.opsworks.RailsAppLayer`, `aws.opsworks.RdsDbInstance`, `aws.opsworks.Stack`, `aws.opsworks.StaticWebLayer`, `aws.opsworks.UserProfile`
+
+### SimpleDB
+
+`aws.simpledb.Domain` has been removed. The AWS SDK for Go v2 no longer supports Amazon SimpleDB.
+
+### WorkLink
+
+The following resources have been removed due to dropped support for Amazon WorkLink in the AWS SDK for Go v2:
+
+- `aws.worklink.Fleet`
+- `aws.worklink.WebsiteCertificateAuthorityAssociation`

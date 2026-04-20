@@ -1,0 +1,491 @@
+---
+title: "aws.ecs — ECS clusters, task definitions, and services"
+description: "Reference for the aws.ecs module: create ECS clusters, define Fargate and EC2 task definitions, and deploy long-running containerized services."
+---
+
+The `aws.ecs` module covers Amazon Elastic Container Service from top to bottom: clusters that pool compute capacity, task definitions that describe one or more containers and their resource requirements, and services that keep a desired number of task instances running and integrate with load balancers. The examples on this page focus on the Fargate launch type, which removes the need to manage EC2 instances directly.
+
+---
+
+## aws.ecs.Cluster
+
+A logical grouping of ECS tasks and services. For Fargate workloads the cluster itself is lightweight—compute is provisioned on demand per task.
+
+### Key inputs
+
+<ParamField path="name" type="string">
+  The cluster name. Changing this forces a new resource.
+</ParamField>
+
+<ParamField path="settings" type="ClusterSetting[]">
+  Cluster-level settings. The only current valid setting is `containerInsights` with value `"enabled"` or `"disabled"`.
+</ParamField>
+
+<ParamField path="configuration" type="object">
+  Advanced configuration including ECS Exec logging (`executeCommandConfiguration`) and Fargate ephemeral storage encryption.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const cluster = new aws.ecs.Cluster("app", {
+    name: "app-cluster",
+    settings: [{
+        name: "containerInsights",
+        value: "enabled",
+    }],
+    tags: { Environment: "production" },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+cluster = aws.ecs.Cluster(
+    "app",
+    name="app-cluster",
+    settings=[aws.ecs.ClusterSettingArgs(
+        name="containerInsights",
+        value="enabled",
+    )],
+    tags={"Environment": "production"},
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ecs.TaskDefinition
+
+Describes the containers to run, the resources they need, and the IAM permissions they hold. A new revision is created on every change.
+
+### Key inputs
+
+<ParamField path="family" type="string" required>
+  A logical name that groups task definition revisions. ECS uses `family:revision` (e.g., `app:3`) as the full identifier.
+</ParamField>
+
+<ParamField path="containerDefinitions" type="string" required>
+  A JSON string describing the containers. Follows the [ECS container definition schema](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_ContainerDefinition.html).
+</ParamField>
+
+<ParamField path="cpu" type="string">
+  Total vCPU units for the task. Required for Fargate. Valid values: `"256"`, `"512"`, `"1024"`, `"2048"`, `"4096"` (and higher for Fargate).
+</ParamField>
+
+<ParamField path="memory" type="string">
+  Total memory in MiB. Required for Fargate. Must be compatible with the chosen `cpu` value.
+</ParamField>
+
+<ParamField path="networkMode" type="string">
+  The Docker network mode. Must be `"awsvpc"` for Fargate tasks.
+</ParamField>
+
+<ParamField path="requiresCompatibilities" type="string[]">
+  `["FARGATE"]` for Fargate tasks, or `["EC2"]` for EC2 launch type.
+</ParamField>
+
+<ParamField path="executionRoleArn" type="string">
+  The ECS task execution role ARN. Required for Fargate—allows ECS to pull images and write logs.
+</ParamField>
+
+<ParamField path="taskRoleArn" type="string">
+  The IAM role that the task's containers assume at runtime to call other AWS services.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const logGroup = new aws.cloudwatch.LogGroup("app-logs", {
+    name: "/ecs/app",
+    retentionInDays: 14,
+});
+
+const taskDef = new aws.ecs.TaskDefinition("app", {
+    family: "app",
+    cpu: "512",
+    memory: "1024",
+    networkMode: "awsvpc",
+    requiresCompatibilities: ["FARGATE"],
+    executionRoleArn: executionRole.arn,
+    taskRoleArn: taskRole.arn,
+    containerDefinitions: JSON.stringify([{
+        name: "app",
+        image: "nginx:latest",
+        essential: true,
+        portMappings: [{ containerPort: 80, protocol: "tcp" }],
+        logConfiguration: {
+            logDriver: "awslogs",
+            options: {
+                "awslogs-group": "/ecs/app",
+                "awslogs-region": "us-east-1",
+                "awslogs-stream-prefix": "app",
+            },
+        },
+        environment: [
+            { name: "NODE_ENV", value: "production" },
+        ],
+    }]),
+    tags: { Service: "app" },
+});
+```
+
+```python Python
+import json
+import pulumi_aws as aws
+
+log_group = aws.cloudwatch.LogGroup(
+    "app-logs",
+    name="/ecs/app",
+    retention_in_days=14,
+)
+
+task_def = aws.ecs.TaskDefinition(
+    "app",
+    family="app",
+    cpu="512",
+    memory="1024",
+    network_mode="awsvpc",
+    requires_compatibilities=["FARGATE"],
+    execution_role_arn=execution_role.arn,
+    task_role_arn=task_role.arn,
+    container_definitions=json.dumps([{
+        "name": "app",
+        "image": "nginx:latest",
+        "essential": True,
+        "portMappings": [{"containerPort": 80, "protocol": "tcp"}],
+        "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+                "awslogs-group": "/ecs/app",
+                "awslogs-region": "us-east-1",
+                "awslogs-stream-prefix": "app",
+            },
+        },
+        "environment": [
+            {"name": "NODE_ENV", "value": "production"},
+        ],
+    }]),
+    tags={"Service": "app"},
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ecs.Service
+
+Keeps a desired number of task instances running within a cluster. Handles task placement, rolling updates, and integration with Application Load Balancers.
+
+<Note>
+To avoid a race condition during deletion, set `dependsOn` on the service to reference the IAM role policy that grants ECS permissions. Without this, the policy may be destroyed before the service has drained.
+</Note>
+
+### Key inputs
+
+<ParamField path="cluster" type="string" required>
+  The ARN or name of the ECS cluster to run the service in.
+</ParamField>
+
+<ParamField path="taskDefinition" type="string" required>
+  The task definition ARN (or `family:revision`) to run.
+</ParamField>
+
+<ParamField path="desiredCount" type="number">
+  The number of task instances to keep running.
+</ParamField>
+
+<ParamField path="launchType" type="string">
+  `"FARGATE"` or `"EC2"`. Defaults to `"EC2"` when not set.
+</ParamField>
+
+<ParamField path="networkConfiguration" type="object">
+  Required for `awsvpc` network mode: `{ subnets, securityGroups, assignPublicIp }`.
+</ParamField>
+
+<ParamField path="loadBalancers" type="LoadBalancer[]">
+  Target group associations: `[{ targetGroupArn, containerName, containerPort }]`.
+</ParamField>
+
+<ParamField path="waitForSteadyState" type="boolean">
+  Block `pulumi up` until the service reaches a steady state. Defaults to `false`.
+</ParamField>
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const service = new aws.ecs.Service("app", {
+    name: "app",
+    cluster: cluster.arn,
+    taskDefinition: taskDef.arn,
+    desiredCount: 2,
+    launchType: "FARGATE",
+    networkConfiguration: {
+        subnets: [privateSubnet.id],
+        securityGroups: [appSg.id],
+        assignPublicIp: false,
+    },
+    loadBalancers: [{
+        targetGroupArn: targetGroup.arn,
+        containerName: "app",
+        containerPort: 80,
+    }],
+    waitForSteadyState: true,
+}, { dependsOn: [ecsTaskExecutionRolePolicy] });
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+service = aws.ecs.Service(
+    "app",
+    name="app",
+    cluster=cluster.arn,
+    task_definition=task_def.arn,
+    desired_count=2,
+    launch_type="FARGATE",
+    network_configuration=aws.ecs.ServiceNetworkConfigurationArgs(
+        subnets=[private_subnet.id],
+        security_groups=[app_sg.id],
+        assign_public_ip=False,
+    ),
+    load_balancers=[aws.ecs.ServiceLoadBalancerArgs(
+        target_group_arn=target_group.arn,
+        container_name="app",
+        container_port=80,
+    )],
+    wait_for_steady_state=True,
+    opts=pulumi.ResourceOptions(depends_on=[ecs_task_execution_role_policy]),
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.ecs.getTaskDefinition
+
+Looks up an existing task definition by family name. Returns the latest active revision.
+
+### Example
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const existing = aws.ecs.getTaskDefinition({ taskDefinition: "app" });
+
+// Reference in a service without managing the task definition
+const service = new aws.ecs.Service("app", {
+    cluster: cluster.id,
+    taskDefinition: existing.then(td => td.arn),
+    desiredCount: 1,
+    launchType: "FARGATE",
+    networkConfiguration: {
+        subnets: [subnet.id],
+        securityGroups: [sg.id],
+    },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+existing = aws.ecs.get_task_definition(task_definition="app")
+
+service = aws.ecs.Service(
+    "app",
+    cluster=cluster.id,
+    task_definition=existing.arn,
+    desired_count=1,
+    launch_type="FARGATE",
+    network_configuration=aws.ecs.ServiceNetworkConfigurationArgs(
+        subnets=[subnet.id],
+        security_groups=[sg.id],
+    ),
+)
+```
+
+</CodeGroup>
+
+---
+
+## Complete Fargate service example
+
+The following program assembles every piece needed for a production Fargate service: IAM roles, CloudWatch log group, cluster, task definition, and service.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// --- IAM ---
+const executionRole = new aws.iam.Role("ecs-exec-role", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: { Service: "ecs-tasks.amazonaws.com" },
+        }],
+    }),
+});
+const execPolicy = new aws.iam.RolePolicyAttachment("ecs-exec-policy", {
+    role: executionRole.name,
+    policyArn: "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+});
+
+// --- Logging ---
+const logGroup = new aws.cloudwatch.LogGroup("app-logs", {
+    name: "/ecs/app",
+    retentionInDays: 7,
+});
+
+// --- Cluster ---
+const cluster = new aws.ecs.Cluster("app", {
+    name: "app-cluster",
+    settings: [{ name: "containerInsights", value: "enabled" }],
+});
+
+// --- Task definition ---
+const taskDef = new aws.ecs.TaskDefinition("app", {
+    family: "app",
+    cpu: "256",
+    memory: "512",
+    networkMode: "awsvpc",
+    requiresCompatibilities: ["FARGATE"],
+    executionRoleArn: executionRole.arn,
+    containerDefinitions: JSON.stringify([{
+        name: "app",
+        image: "public.ecr.aws/nginx/nginx:latest",
+        essential: true,
+        portMappings: [{ containerPort: 80, protocol: "tcp" }],
+        logConfiguration: {
+            logDriver: "awslogs",
+            options: {
+                "awslogs-group": "/ecs/app",
+                "awslogs-region": "us-east-1",
+                "awslogs-stream-prefix": "app",
+            },
+        },
+    }]),
+});
+
+// --- Service ---
+const service = new aws.ecs.Service("app", {
+    name: "app",
+    cluster: cluster.arn,
+    taskDefinition: taskDef.arn,
+    desiredCount: 2,
+    launchType: "FARGATE",
+    networkConfiguration: {
+        subnets: [privateSubnetA.id, privateSubnetB.id],
+        securityGroups: [appSg.id],
+        assignPublicIp: false,
+    },
+}, { dependsOn: [execPolicy] });
+
+export const clusterArn = cluster.arn;
+export const serviceArn = service.id;
+```
+
+```python Python
+import json
+import pulumi
+import pulumi_aws as aws
+
+# IAM
+execution_role = aws.iam.Role(
+    "ecs-exec-role",
+    assume_role_policy=json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Action": "sts:AssumeRole",
+            "Effect": "Allow",
+            "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+        }],
+    }),
+)
+exec_policy = aws.iam.RolePolicyAttachment(
+    "ecs-exec-policy",
+    role=execution_role.name,
+    policy_arn="arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+)
+
+# Logging
+log_group = aws.cloudwatch.LogGroup(
+    "app-logs",
+    name="/ecs/app",
+    retention_in_days=7,
+)
+
+# Cluster
+cluster = aws.ecs.Cluster(
+    "app",
+    name="app-cluster",
+    settings=[aws.ecs.ClusterSettingArgs(name="containerInsights", value="enabled")],
+)
+
+# Task definition
+task_def = aws.ecs.TaskDefinition(
+    "app",
+    family="app",
+    cpu="256",
+    memory="512",
+    network_mode="awsvpc",
+    requires_compatibilities=["FARGATE"],
+    execution_role_arn=execution_role.arn,
+    container_definitions=json.dumps([{
+        "name": "app",
+        "image": "public.ecr.aws/nginx/nginx:latest",
+        "essential": True,
+        "portMappings": [{"containerPort": 80, "protocol": "tcp"}],
+        "logConfiguration": {
+            "logDriver": "awslogs",
+            "options": {
+                "awslogs-group": "/ecs/app",
+                "awslogs-region": "us-east-1",
+                "awslogs-stream-prefix": "app",
+            },
+        },
+    }]),
+)
+
+# Service
+service = aws.ecs.Service(
+    "app",
+    name="app",
+    cluster=cluster.arn,
+    task_definition=task_def.arn,
+    desired_count=2,
+    launch_type="FARGATE",
+    network_configuration=aws.ecs.ServiceNetworkConfigurationArgs(
+        subnets=[private_subnet_a.id, private_subnet_b.id],
+        security_groups=[app_sg.id],
+        assign_public_ip=False,
+    ),
+    opts=pulumi.ResourceOptions(depends_on=[exec_policy]),
+)
+
+pulumi.export("cluster_arn", cluster.arn)
+pulumi.export("service_arn", service.id)
+```
+
+</CodeGroup>

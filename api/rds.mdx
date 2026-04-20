@@ -1,0 +1,451 @@
+---
+title: "aws.rds — RDS instances, clusters, and parameter groups"
+description: "Reference for the aws.rds module: provision RDS database instances and Aurora clusters, configure parameter groups, and manage snapshots."
+---
+
+The `aws.rds` module covers managed relational databases on AWS: single-engine DB instances (MySQL, PostgreSQL, SQL Server, Oracle, MariaDB), Aurora clusters, parameter groups, subnet groups, and snapshots. In v7 the `name` property of `aws.rds.Instance` was removed — use `dbName` instead.
+
+<Warning>
+**v7 breaking change for `aws.rds.Instance`**
+
+The `name` property (deprecated in v6) has been **removed** in v7. Use `dbName` to set the initial database name. Stacks that still reference `name` will error on `pulumi up`.
+</Warning>
+
+## aws.rds.Instance
+
+Provision a single-engine RDS DB instance.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const db = new aws.rds.Instance("app-db", {
+    // dbName replaces the removed `name` property (v7)
+    dbName: "appdb",
+    engine: "mysql",
+    engineVersion: "8.0",
+    instanceClass: aws.rds.InstanceType.T3_Micro,
+    allocatedStorage: 20,
+    username: "admin",
+    password: pulumi.secret("change-me-in-production"),
+    dbSubnetGroupName: dbSubnetGroup.name,
+    vpcSecurityGroupIds: [dbSg.id],
+    multiAz: false,
+    storageEncrypted: true,
+    skipFinalSnapshot: true,
+    tags: { Environment: "staging" },
+});
+
+export const endpoint = db.endpoint;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+db = aws.rds.Instance("app-db",
+    # db_name replaces the removed `name` property (v7)
+    db_name="appdb",
+    engine="mysql",
+    engine_version="8.0",
+    instance_class=aws.rds.InstanceType.T3_MICRO,
+    allocated_storage=20,
+    username="admin",
+    password=pulumi.Output.secret("change-me-in-production"),
+    db_subnet_group_name=db_subnet_group.name,
+    vpc_security_group_ids=[db_sg.id],
+    multi_az=False,
+    storage_encrypted=True,
+    skip_final_snapshot=True,
+    tags={"Environment": "staging"},
+)
+
+pulumi.export("endpoint", db.endpoint)
+```
+
+</CodeGroup>
+
+### Key inputs
+
+<ParamField path="dbName" type="string">
+  Name of the database to create when the instance is provisioned. **(v7: replaces the removed `name` property)**
+</ParamField>
+
+<ParamField path="engine" type="string" required>
+  Database engine. Examples: `mysql`, `postgres`, `mariadb`, `oracle-ee`, `sqlserver-se`.
+</ParamField>
+
+<ParamField path="engineVersion" type="string">
+  Engine version. Leave unset to use the provider default for the selected engine.
+</ParamField>
+
+<ParamField path="instanceClass" type="string" required>
+  EC2 instance class for the DB instance. Use `aws.rds.InstanceType.*` enum values (e.g., `aws.rds.InstanceType.T3_Micro`).
+</ParamField>
+
+<ParamField path="allocatedStorage" type="number" required>
+  Allocated storage in GiB. Minimum varies by engine (20 GiB for MySQL/PostgreSQL).
+</ParamField>
+
+<ParamField path="username" type="string" required>
+  Master username for the database.
+</ParamField>
+
+<ParamField path="password" type="string" required>
+  Master password. Store as a secret — all arguments are stored in plain text in state.
+</ParamField>
+
+<ParamField path="dbSubnetGroupName" type="string">
+  Name of the DB subnet group. Required for instances inside a VPC.
+</ParamField>
+
+<ParamField path="vpcSecurityGroupIds" type="string[]">
+  List of VPC security group IDs to associate with the instance.
+</ParamField>
+
+<ParamField path="multiAz" type="boolean">
+  Enable Multi-AZ for automatic failover. Defaults to `false`.
+</ParamField>
+
+<ParamField path="storageEncrypted" type="boolean">
+  Encrypt the DB storage at rest. Defaults to `false`; requires a KMS key for some engines.
+</ParamField>
+
+<ParamField path="skipFinalSnapshot" type="boolean">
+  Skip the final snapshot when the instance is deleted. Set to `true` for non-production instances.
+</ParamField>
+
+### Key outputs
+
+| Attribute | Description |
+|---|---|
+| `endpoint` | Connection endpoint in `host:port` format. |
+| `address` | Hostname portion of the endpoint. |
+| `port` | Port the instance listens on. |
+| `arn` | ARN of the DB instance. |
+| `id` | DB instance identifier. |
+
+---
+
+## aws.rds.SubnetGroup
+
+A DB subnet group defines the subnets in which RDS instances are placed. Required for instances in a VPC.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const dbSubnetGroup = new aws.rds.SubnetGroup("db-subnet-group", {
+    name: "my-db-subnet-group",
+    subnetIds: [privateSubnet1.id, privateSubnet2.id],
+    tags: { Name: "My DB subnet group" },
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+db_subnet_group = aws.rds.SubnetGroup("db-subnet-group",
+    name="my-db-subnet-group",
+    subnet_ids=[private_subnet1.id, private_subnet2.id],
+    tags={"Name": "My DB subnet group"},
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.rds.ParameterGroup
+
+Define engine-specific parameters to tune database behavior.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const params = new aws.rds.ParameterGroup("mysql-params", {
+    family: "mysql8.0",
+    name: "my-mysql-params",
+    parameters: [
+        { name: "character_set_server", value: "utf8mb4" },
+        { name: "max_connections", value: "200", applyMethod: "pending-reboot" },
+    ],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+params = aws.rds.ParameterGroup("mysql-params",
+    family="mysql8.0",
+    name="my-mysql-params",
+    parameters=[
+        aws.rds.ParameterGroupParameterArgs(name="character_set_server", value="utf8mb4"),
+        aws.rds.ParameterGroupParameterArgs(name="max_connections", value="200", apply_method="pending-reboot"),
+    ],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.rds.Cluster
+
+Manage an Aurora cluster or RDS Multi-AZ DB Cluster. Use `aws.rds.ClusterInstance` to add compute instances to the cluster.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const cluster = new aws.rds.Cluster("aurora-cluster", {
+    clusterIdentifier: "my-aurora-cluster",
+    engine: aws.rds.EngineType.AuroraMysql,
+    engineVersion: "8.0.mysql_aurora.3.04.0",
+    databaseName: "appdb",
+    masterUsername: "admin",
+    masterPassword: pulumi.secret("change-me-in-production"),
+    vpcSecurityGroupIds: [dbSg.id],
+    dbSubnetGroupName: dbSubnetGroup.name,
+    backupRetentionPeriod: 7,
+    skipFinalSnapshot: true,
+    storageEncrypted: true,
+    tags: { Environment: "production" },
+});
+
+// Add a writer instance and a reader instance
+const writer = new aws.rds.ClusterInstance("writer", {
+    identifier: "my-aurora-writer",
+    clusterIdentifier: cluster.id,
+    instanceClass: aws.rds.InstanceType.R6G_Large,
+    engine: cluster.engine,
+    engineVersion: cluster.engineVersion,
+});
+
+const reader = new aws.rds.ClusterInstance("reader", {
+    identifier: "my-aurora-reader",
+    clusterIdentifier: cluster.id,
+    instanceClass: aws.rds.InstanceType.R6G_Large,
+    engine: cluster.engine,
+    engineVersion: cluster.engineVersion,
+});
+
+export const clusterEndpoint = cluster.endpoint;
+export const readerEndpoint = cluster.readerEndpoint;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+cluster = aws.rds.Cluster("aurora-cluster",
+    cluster_identifier="my-aurora-cluster",
+    engine=aws.rds.EngineType.AURORA_MYSQL,
+    engine_version="8.0.mysql_aurora.3.04.0",
+    database_name="appdb",
+    master_username="admin",
+    master_password=pulumi.Output.secret("change-me-in-production"),
+    vpc_security_group_ids=[db_sg.id],
+    db_subnet_group_name=db_subnet_group.name,
+    backup_retention_period=7,
+    skip_final_snapshot=True,
+    storage_encrypted=True,
+    tags={"Environment": "production"},
+)
+
+writer = aws.rds.ClusterInstance("writer",
+    identifier="my-aurora-writer",
+    cluster_identifier=cluster.id,
+    instance_class=aws.rds.InstanceType.R6_G_LARGE,
+    engine=cluster.engine,
+    engine_version=cluster.engine_version,
+)
+
+reader = aws.rds.ClusterInstance("reader",
+    identifier="my-aurora-reader",
+    cluster_identifier=cluster.id,
+    instance_class=aws.rds.InstanceType.R6_G_LARGE,
+    engine=cluster.engine,
+    engine_version=cluster.engine_version,
+)
+
+pulumi.export("cluster_endpoint", cluster.endpoint)
+pulumi.export("reader_endpoint", cluster.reader_endpoint)
+```
+
+</CodeGroup>
+
+### Key inputs for aws.rds.Cluster
+
+<ParamField path="clusterIdentifier" type="string">
+  Unique identifier for the cluster. If omitted, a random name is generated.
+</ParamField>
+
+<ParamField path="engine" type="string" required>
+  Cluster engine. Use `aws.rds.EngineType` enum values: `AuroraMysql`, `AuroraPostgresql`, `Mysql`, `Postgres`.
+</ParamField>
+
+<ParamField path="masterUsername" type="string" required>
+  Master username for the cluster.
+</ParamField>
+
+<ParamField path="masterPassword" type="string">
+  Master password. Required when creating a new cluster.
+</ParamField>
+
+<ParamField path="vpcSecurityGroupIds" type="string[]">
+  VPC security group IDs to associate with the cluster.
+</ParamField>
+
+<ParamField path="dbSubnetGroupName" type="string">
+  DB subnet group name. Required for VPC placement.
+</ParamField>
+
+### Key outputs for aws.rds.Cluster
+
+| Attribute | Description |
+|---|---|
+| `endpoint` | Cluster writer endpoint. |
+| `readerEndpoint` | Load-balanced reader endpoint across all read replicas. |
+| `clusterResourceId` | Region-unique, immutable cluster identifier. |
+
+---
+
+## aws.rds.getEngineVersion
+
+Look up available engine versions for a given engine. Useful for pinning to a specific version without hard-coding strings.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const latest = aws.rds.getEngineVersion({
+    engine: "mysql",
+    preferredVersions: ["8.0.36", "8.0.35"],
+});
+
+latest.then(v => console.log(v.version));
+```
+
+```python Python
+import pulumi_aws as aws
+
+latest = aws.rds.get_engine_version(
+    engine="mysql",
+    preferred_versions=["8.0.36", "8.0.35"],
+)
+
+pulumi.export("engine_version", latest.version)
+```
+
+</CodeGroup>
+
+---
+
+## Complete example: MySQL instance in a private VPC
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.Vpc("app-vpc", { cidrBlock: "10.0.0.0/16" });
+
+const subnetA = new aws.ec2.Subnet("db-subnet-a", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.1.0/24",
+    availabilityZone: "us-east-1a",
+});
+
+const subnetB = new aws.ec2.Subnet("db-subnet-b", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.2.0/24",
+    availabilityZone: "us-east-1b",
+});
+
+const dbSg = new aws.ec2.SecurityGroup("db-sg", {
+    vpcId: vpc.id,
+    ingress: [{ protocol: "tcp", fromPort: 3306, toPort: 3306, cidrBlocks: ["10.0.0.0/16"] }],
+    egress: [{ protocol: "-1", fromPort: 0, toPort: 0, cidrBlocks: ["0.0.0.0/0"] }],
+});
+
+const dbSubnetGroup = new aws.rds.SubnetGroup("db-subnets", {
+    subnetIds: [subnetA.id, subnetB.id],
+});
+
+const db = new aws.rds.Instance("app-db", {
+    dbName: "appdb",
+    engine: "mysql",
+    engineVersion: "8.0",
+    instanceClass: aws.rds.InstanceType.T3_Micro,
+    allocatedStorage: 20,
+    username: "admin",
+    password: pulumi.secret("change-me-in-production"),
+    dbSubnetGroupName: dbSubnetGroup.name,
+    vpcSecurityGroupIds: [dbSg.id],
+    storageEncrypted: true,
+    skipFinalSnapshot: true,
+});
+
+export const endpoint = db.endpoint;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+vpc = aws.ec2.Vpc("app-vpc", cidr_block="10.0.0.0/16")
+
+subnet_a = aws.ec2.Subnet("db-subnet-a",
+    vpc_id=vpc.id,
+    cidr_block="10.0.1.0/24",
+    availability_zone="us-east-1a",
+)
+
+subnet_b = aws.ec2.Subnet("db-subnet-b",
+    vpc_id=vpc.id,
+    cidr_block="10.0.2.0/24",
+    availability_zone="us-east-1b",
+)
+
+db_sg = aws.ec2.SecurityGroup("db-sg",
+    vpc_id=vpc.id,
+    ingress=[aws.ec2.SecurityGroupIngressArgs(
+        protocol="tcp", from_port=3306, to_port=3306, cidr_blocks=["10.0.0.0/16"]
+    )],
+    egress=[aws.ec2.SecurityGroupEgressArgs(
+        protocol="-1", from_port=0, to_port=0, cidr_blocks=["0.0.0.0/0"]
+    )],
+)
+
+db_subnet_group = aws.rds.SubnetGroup("db-subnets",
+    subnet_ids=[subnet_a.id, subnet_b.id],
+)
+
+db = aws.rds.Instance("app-db",
+    db_name="appdb",
+    engine="mysql",
+    engine_version="8.0",
+    instance_class=aws.rds.InstanceType.T3_MICRO,
+    allocated_storage=20,
+    username="admin",
+    password=pulumi.Output.secret("change-me-in-production"),
+    db_subnet_group_name=db_subnet_group.name,
+    vpc_security_group_ids=[db_sg.id],
+    storage_encrypted=True,
+    skip_final_snapshot=True,
+)
+
+pulumi.export("endpoint", db.endpoint)
+```
+
+</CodeGroup>

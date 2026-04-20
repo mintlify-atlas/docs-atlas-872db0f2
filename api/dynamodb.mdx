@@ -1,0 +1,322 @@
+---
+title: "aws.dynamodb — DynamoDB tables and global tables"
+description: "Reference for the aws.dynamodb module: create on-demand or provisioned DynamoDB tables, configure indexes, streams, and global tables."
+---
+
+The `aws.dynamodb` module provides resources for Amazon DynamoDB, a serverless key-value and document database. Use `aws.dynamodb.Table` for most use cases — it supports both on-demand and provisioned capacity, global and local secondary indexes, streams, TTL, and multi-region replication through `replica` blocks (Global Tables V2).
+
+## aws.dynamodb.Table
+
+The core resource for creating and managing a DynamoDB table.
+
+<Note>
+Only define `attributes` for fields used as hash/range keys on the table itself or on GSIs and LSIs. Adding extra attributes causes Pulumi to detect a perpetual diff.
+</Note>
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const gameScores = new aws.dynamodb.Table("game-scores", {
+    name: "GameScores",
+    billingMode: "PAY_PER_REQUEST",
+    hashKey: "UserId",
+    rangeKey: "GameTitle",
+    attributes: [
+        { name: "UserId", type: "S" },
+        { name: "GameTitle", type: "S" },
+        { name: "TopScore", type: "N" },
+    ],
+    globalSecondaryIndexes: [{
+        name: "GameTitleIndex",
+        hashKey: "GameTitle",
+        rangeKey: "TopScore",
+        projectionType: "INCLUDE",
+        nonKeyAttributes: ["UserId"],
+    }],
+    ttl: {
+        attributeName: "ExpiresAt",
+        enabled: true,
+    },
+    tags: {
+        Environment: "production",
+        Team: "backend",
+    },
+});
+
+export const tableArn = gameScores.arn;
+export const tableName = gameScores.name;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+game_scores = aws.dynamodb.Table("game-scores",
+    name="GameScores",
+    billing_mode="PAY_PER_REQUEST",
+    hash_key="UserId",
+    range_key="GameTitle",
+    attributes=[
+        aws.dynamodb.TableAttributeArgs(name="UserId", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="GameTitle", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="TopScore", type="N"),
+    ],
+    global_secondary_indexes=[aws.dynamodb.TableGlobalSecondaryIndexArgs(
+        name="GameTitleIndex",
+        hash_key="GameTitle",
+        range_key="TopScore",
+        projection_type="INCLUDE",
+        non_key_attributes=["UserId"],
+    )],
+    ttl=aws.dynamodb.TableTtlArgs(
+        attribute_name="ExpiresAt",
+        enabled=True,
+    ),
+    tags={
+        "Environment": "production",
+        "Team": "backend",
+    },
+)
+
+pulumi.export("table_arn", game_scores.arn)
+pulumi.export("table_name", game_scores.name)
+```
+
+</CodeGroup>
+
+### Key inputs
+
+<ParamField path="name" type="string">
+  Name of the DynamoDB table. If omitted, a random unique name is generated.
+</ParamField>
+
+<ParamField path="billingMode" type="string" required>
+  Controls billing and capacity. `PAY_PER_REQUEST` (on-demand) or `PROVISIONED`. Defaults to `PROVISIONED`.
+</ParamField>
+
+<ParamField path="hashKey" type="string" required>
+  Attribute name to use as the partition key (hash key). Must match an entry in `attributes`.
+</ParamField>
+
+<ParamField path="rangeKey" type="string">
+  Attribute name to use as the sort key (range key). Must match an entry in `attributes`. Optional.
+</ParamField>
+
+<ParamField path="attributes" type="object[]" required>
+  List of attribute definitions used as keys. Each has `name` (string) and `type` (`S`, `N`, or `B`).
+</ParamField>
+
+<ParamField path="readCapacity" type="number">
+  Read capacity units. Required when `billingMode` is `PROVISIONED`.
+</ParamField>
+
+<ParamField path="writeCapacity" type="number">
+  Write capacity units. Required when `billingMode` is `PROVISIONED`.
+</ParamField>
+
+<ParamField path="globalSecondaryIndexes" type="object[]">
+  List of GSI definitions. Each requires `name`, `hashKey`, `projectionType`, and optionally `rangeKey`, `readCapacity`, `writeCapacity`, and `nonKeyAttributes`.
+</ParamField>
+
+<ParamField path="localSecondaryIndexes" type="object[]">
+  List of LSI definitions. LSIs share the table's partition key. Cannot be changed after creation.
+</ParamField>
+
+<ParamField path="streamEnabled" type="boolean">
+  Enable DynamoDB Streams. Requires `streamViewType` when `true`.
+</ParamField>
+
+<ParamField path="streamViewType" type="string">
+  What information is written to the stream. One of `KEYS_ONLY`, `NEW_IMAGE`, `OLD_IMAGE`, `NEW_AND_OLD_IMAGES`.
+</ParamField>
+
+<ParamField path="ttl" type="object">
+  TTL configuration block. Set `attributeName` (the attribute that holds the Unix epoch expiry time) and `enabled`.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Map of tags to apply to the table.
+</ParamField>
+
+### Key outputs
+
+| Attribute | Description |
+|---|---|
+| `arn` | ARN of the table. |
+| `id` | Name of the table (same as `name`). |
+| `streamArn` | ARN of the DynamoDB Stream (when streams are enabled). |
+| `streamLabel` | Timestamp label for the stream, used with the ARN. |
+
+---
+
+## Provisioned table with a GSI
+
+When `billingMode` is `PROVISIONED`, set `readCapacity` and `writeCapacity` at both the table level and on each GSI.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const orders = new aws.dynamodb.Table("orders", {
+    name: "Orders",
+    billingMode: "PROVISIONED",
+    readCapacity: 5,
+    writeCapacity: 5,
+    hashKey: "CustomerId",
+    rangeKey: "OrderId",
+    attributes: [
+        { name: "CustomerId", type: "S" },
+        { name: "OrderId", type: "S" },
+        { name: "CreatedAt", type: "S" },
+        { name: "Status", type: "S" },
+    ],
+    globalSecondaryIndexes: [{
+        name: "StatusCreatedAtIndex",
+        hashKey: "Status",
+        rangeKey: "CreatedAt",
+        readCapacity: 5,
+        writeCapacity: 5,
+        projectionType: "ALL",
+    }],
+});
+```
+
+```python Python
+import pulumi_aws as aws
+
+orders = aws.dynamodb.Table("orders",
+    name="Orders",
+    billing_mode="PROVISIONED",
+    read_capacity=5,
+    write_capacity=5,
+    hash_key="CustomerId",
+    range_key="OrderId",
+    attributes=[
+        aws.dynamodb.TableAttributeArgs(name="CustomerId", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="OrderId", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="CreatedAt", type="S"),
+        aws.dynamodb.TableAttributeArgs(name="Status", type="S"),
+    ],
+    global_secondary_indexes=[aws.dynamodb.TableGlobalSecondaryIndexArgs(
+        name="StatusCreatedAtIndex",
+        hash_key="Status",
+        range_key="CreatedAt",
+        read_capacity=5,
+        write_capacity=5,
+        projection_type="ALL",
+    )],
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.dynamodb.GlobalTable
+
+Manages DynamoDB Global Tables **V1** (version 2017.11.29). This resource layers on top of existing `aws.dynamodb.Table` resources that must already exist in each target region with streams enabled (`streamViewType: "NEW_AND_OLD_IMAGES"`).
+
+<Note>
+For Global Tables **V2** (version 2019.11.21 — the current recommendation), use the `replica` blocks inside `aws.dynamodb.Table` instead of this resource.
+</Note>
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+// Tables must already exist in each region with identical schemas and streams enabled.
+const myTable = new aws.dynamodb.GlobalTable("myTable", {
+    name: "myTable",
+    replicas: [
+        { regionName: "us-east-1" },
+        { regionName: "us-west-2" },
+    ],
+}, { dependsOn: [usEast1Table, usWest2Table] });
+```
+
+```python Python
+import pulumi_aws as aws
+
+my_table = aws.dynamodb.GlobalTable("myTable",
+    name="myTable",
+    replicas=[
+        aws.dynamodb.GlobalTableReplicaArgs(region_name="us-east-1"),
+        aws.dynamodb.GlobalTableReplicaArgs(region_name="us-west-2"),
+    ],
+    opts=pulumi.ResourceOptions(depends_on=[us_east1_table, us_west2_table]),
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.dynamodb.TableItem
+
+Put a single item (JSON document) into a DynamoDB table. Useful for seeding static reference data during infrastructure provisioning.
+
+<Warning>
+`aws.dynamodb.TableItem` is intended for low-volume static data. Do not use it for application data or bulk loading — Pulumi will track every item in state.
+</Warning>
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const configItem = new aws.dynamodb.TableItem("config-item", {
+    tableName: myTable.name,
+    hashKey: myTable.hashKey,
+    item: JSON.stringify({
+        ConfigKey: { S: "feature-flags" },
+        Enabled: { BOOL: true },
+        Version: { N: "1" },
+    }),
+});
+```
+
+```python Python
+import json
+import pulumi_aws as aws
+
+config_item = aws.dynamodb.TableItem("config-item",
+    table_name=my_table.name,
+    hash_key=my_table.hash_key,
+    item=json.dumps({
+        "ConfigKey": {"S": "feature-flags"},
+        "Enabled": {"BOOL": True},
+        "Version": {"N": "1"},
+    }),
+)
+```
+
+</CodeGroup>
+
+---
+
+## aws.dynamodb.getTable
+
+Look up an existing table's configuration.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const existing = aws.dynamodb.getTable({ name: "Orders" });
+existing.then(t => console.log(t.arn));
+```
+
+```python Python
+import pulumi_aws as aws
+
+existing = aws.dynamodb.get_table(name="Orders")
+pulumi.export("table_arn", existing.arn)
+```
+
+</CodeGroup>

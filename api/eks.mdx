@@ -1,0 +1,439 @@
+---
+title: "aws.eks — Amazon EKS Kubernetes cluster management"
+description: "Reference for the aws.eks module: create and configure Amazon EKS clusters, managed node groups, Kubernetes add-ons, and access management."
+---
+
+The `aws.eks` module provisions and manages Amazon Elastic Kubernetes Service infrastructure through Pulumi. This covers the full lifecycle of an EKS cluster: the control plane, managed node groups that supply compute capacity, EKS add-ons for cluster-level services like CoreDNS and the VPC CNI, and OIDC providers that enable IAM Roles for Service Accounts (IRSA).
+
+---
+
+## v7 breaking changes
+
+<Warning>
+Two breaking changes affect EKS resources when upgrading from provider v6 to v7:
+
+- **`aws.eks.Cluster`**: `certificateAuthorities` (plural) has been removed. Use `certificateAuthority` (singular) instead.
+- **`aws.eks.Cluster`**: `defaultAddonsToRemoves` has been removed. Use `bootstrapSelfManagedAddons: false` combined with explicit `aws.eks.Addon` resources to control which platform add-ons are installed.
+- **`aws.eks.Addon`**: `resolveConflicts` has been removed. Use `resolveConflictsOnCreate` and `resolveConflictsOnUpdate` separately.
+</Warning>
+
+---
+
+## aws.eks.Cluster
+
+Manages the EKS control plane. This resource provisions the Kubernetes API server, etcd, and the supporting AWS infrastructure.
+
+### Key inputs
+
+<ParamField path="name" type="string" required>
+  The cluster name. Must be unique within the account and region.
+</ParamField>
+
+<ParamField path="version" type="string">
+  The Kubernetes version (e.g., `"1.31"`). Omitting this uses the latest default version. Changing version triggers an in-place upgrade.
+</ParamField>
+
+<ParamField path="roleArn" type="string" required>
+  The ARN of the IAM role that EKS uses to manage the cluster. Must have the `AmazonEKSClusterPolicy` managed policy attached.
+</ParamField>
+
+<ParamField path="vpcConfig" type="object" required>
+  Network configuration for the cluster control plane. Required fields: `subnetIds`. Optional: `securityGroupIds`, `endpointPrivateAccess`, `endpointPublicAccess`.
+</ParamField>
+
+<ParamField path="accessConfig" type="object">
+  Controls how cluster access is configured. `authenticationMode` accepts `"CONFIG_MAP"`, `"API"`, or `"API_AND_CONFIG_MAP"`.
+</ParamField>
+
+<ParamField path="bootstrapSelfManagedAddons" type="boolean">
+  When `false`, EKS does not install default self-managed add-ons. Required when enabling EKS Auto Mode. Set to `false` to manage add-ons explicitly.
+</ParamField>
+
+### Key outputs
+
+<ParamField path="endpoint" type="string">
+  The Kubernetes API server endpoint URL.
+</ParamField>
+
+<ParamField path="certificateAuthority" type="object">
+  Contains the base64-encoded CA certificate at `.data`. Use this to construct a kubeconfig.
+</ParamField>
+
+<ParamField path="identity" type="object">
+  The OIDC identity provider information used for IRSA. Access the issuer URL at `.oidcs[0].issuer`.
+</ParamField>
+
+### Example
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Cluster IAM role
+const clusterRole = new aws.iam.Role("cluster-role", {
+    name: "eks-cluster-role",
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: ["sts:AssumeRole", "sts:TagSession"],
+            Effect: "Allow",
+            Principal: { Service: "eks.amazonaws.com" },
+        }],
+    }),
+});
+
+const clusterPolicy = new aws.iam.RolePolicyAttachment("cluster-policy", {
+    policyArn: "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+    role: clusterRole.name,
+});
+
+// Cluster
+const cluster = new aws.eks.Cluster("example", {
+    name: "example",
+    version: "1.31",
+    roleArn: clusterRole.arn,
+    accessConfig: {
+        authenticationMode: "API",
+    },
+    vpcConfig: {
+        subnetIds: [subnetA.id, subnetB.id, subnetC.id],
+        endpointPrivateAccess: true,
+        endpointPublicAccess: true,
+    },
+}, { dependsOn: [clusterPolicy] });
+
+// Kubeconfig helper
+export const kubeconfig = pulumi.all([
+    cluster.name,
+    cluster.endpoint,
+    cluster.certificateAuthority,
+]).apply(([name, endpoint, ca]) => JSON.stringify({
+    apiVersion: "v1",
+    kind: "Config",
+    clusters: [{
+        name,
+        cluster: {
+            server: endpoint,
+            "certificate-authority-data": ca.data,
+        },
+    }],
+    users: [{
+        name,
+        user: { exec: {
+            apiVersion: "client.authentication.k8s.io/v1beta1",
+            command: "aws",
+            args: ["eks", "get-token", "--cluster-name", name],
+        }},
+    }],
+    contexts: [{ name, context: { cluster: name, user: name } }],
+    "current-context": name,
+}));
+```
+
+---
+
+## aws.eks.NodeGroup
+
+Provisions a managed node group—an Auto Scaling group of EC2 instances registered as Kubernetes nodes. EKS handles node bootstrapping and replacement during upgrades.
+
+### Key inputs
+
+<ParamField path="clusterName" type="string" required>
+  The name of the EKS cluster this node group belongs to.
+</ParamField>
+
+<ParamField path="nodeRoleArn" type="string" required>
+  The ARN of the IAM role to assign to each node. Must have `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, and `AmazonEC2ContainerRegistryReadOnly` attached.
+</ParamField>
+
+<ParamField path="subnetIds" type="string[]" required>
+  The subnets in which to place node instances.
+</ParamField>
+
+<ParamField path="scalingConfig" type="object" required>
+  `{ desiredSize, minSize, maxSize }`.
+</ParamField>
+
+<ParamField path="instanceTypes" type="string[]">
+  EC2 instance types for the nodes. Defaults to `["t3.medium"]`.
+</ParamField>
+
+<ParamField path="amiType" type="string">
+  The AMI type for nodes. Common values: `"AL2_x86_64"`, `"AL2_ARM_64"`, `"AL2023_x86_64_STANDARD"`, `"BOTTLEROCKET_x86_64"`.
+</ParamField>
+
+<ParamField path="diskSize" type="number">
+  Root EBS volume size in GiB. Defaults to `20` for Linux, `50` for Windows.
+</ParamField>
+
+<ParamField path="labels" type="Record<string, string>">
+  Kubernetes node labels applied via the EKS API.
+</ParamField>
+
+<ParamField path="updateConfig" type="object">
+  Controls rolling update behavior: `{ maxUnavailable }` or `{ maxUnavailablePercentage }`.
+</ParamField>
+
+### Example
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+// Node IAM role
+const nodeRole = new aws.iam.Role("node-role", {
+    name: "eks-node-role",
+    assumeRolePolicy: JSON.stringify({
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: { Service: "ec2.amazonaws.com" },
+        }],
+        Version: "2012-10-17",
+    }),
+});
+
+const workerNodePolicy = new aws.iam.RolePolicyAttachment("worker-node-policy", {
+    policyArn: "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    role: nodeRole.name,
+});
+const cniPolicy = new aws.iam.RolePolicyAttachment("cni-policy", {
+    policyArn: "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    role: nodeRole.name,
+});
+const registryPolicy = new aws.iam.RolePolicyAttachment("registry-policy", {
+    policyArn: "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+    role: nodeRole.name,
+});
+
+const nodeGroup = new aws.eks.NodeGroup("app-nodes", {
+    clusterName: cluster.name,
+    nodeGroupName: "app-nodes",
+    nodeRoleArn: nodeRole.arn,
+    subnetIds: [privateSubnetA.id, privateSubnetB.id],
+    instanceTypes: ["t3.medium"],
+    scalingConfig: {
+        desiredSize: 2,
+        minSize: 1,
+        maxSize: 5,
+    },
+    updateConfig: { maxUnavailable: 1 },
+    labels: { role: "app" },
+}, {
+    dependsOn: [workerNodePolicy, cniPolicy, registryPolicy],
+});
+```
+
+---
+
+## aws.eks.Addon
+
+Installs or manages an EKS-managed add-on on a cluster. Common add-ons include `vpc-cni`, `coredns`, `kube-proxy`, and `aws-ebs-csi-driver`.
+
+<Note>
+In v7, `resolveConflicts` has been replaced by two separate fields: `resolveConflictsOnCreate` and `resolveConflictsOnUpdate`. Update any existing code that used the old field.
+</Note>
+
+### Key inputs
+
+<ParamField path="clusterName" type="string" required>
+  The cluster to install the add-on on.
+</ParamField>
+
+<ParamField path="addonName" type="string" required>
+  The add-on identifier (e.g., `"vpc-cni"`, `"coredns"`, `"kube-proxy"`, `"aws-ebs-csi-driver"`).
+</ParamField>
+
+<ParamField path="addonVersion" type="string">
+  Pin the add-on to a specific version. If omitted, the default version for the cluster's Kubernetes version is used.
+</ParamField>
+
+<ParamField path="resolveConflictsOnCreate" type="string">
+  How to handle conflicts when creating: `"NONE"` (default) or `"OVERWRITE"`.
+</ParamField>
+
+<ParamField path="resolveConflictsOnUpdate" type="string">
+  How to handle conflicts when updating: `"NONE"`, `"OVERWRITE"`, or `"PRESERVE"`.
+</ParamField>
+
+<ParamField path="configurationValues" type="string">
+  A JSON string with add-on-specific configuration overrides.
+</ParamField>
+
+<ParamField path="serviceAccountRoleArn" type="string">
+  The IAM role ARN to associate with the add-on's service account (used for add-ons that need AWS API access).
+</ParamField>
+
+### Example
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+// VPC CNI add-on (basic)
+const vpcCni = new aws.eks.Addon("vpc-cni", {
+    clusterName: cluster.name,
+    addonName: "vpc-cni",
+});
+
+// CoreDNS pinned to a specific version, preserving any kubectl changes on update
+const coreDns = new aws.eks.Addon("coredns", {
+    clusterName: cluster.name,
+    addonName: "coredns",
+    addonVersion: "v1.10.1-eksbuild.1",
+    resolveConflictsOnUpdate: "PRESERVE",
+});
+
+// EBS CSI driver with an IRSA role
+const ebsCsi = new aws.eks.Addon("ebs-csi", {
+    clusterName: cluster.name,
+    addonName: "aws-ebs-csi-driver",
+    serviceAccountRoleArn: ebsCsiRole.arn,
+    resolveConflictsOnCreate: "OVERWRITE",
+});
+
+// CoreDNS with custom replica count via configurationValues
+const coreDnsCustom = new aws.eks.Addon("coredns-custom", {
+    clusterName: cluster.name,
+    addonName: "coredns",
+    addonVersion: "v1.10.1-eksbuild.1",
+    resolveConflictsOnCreate: "OVERWRITE",
+    configurationValues: JSON.stringify({
+        replicaCount: 3,
+        resources: {
+            limits: { cpu: "100m", memory: "150Mi" },
+            requests: { cpu: "100m", memory: "150Mi" },
+        },
+    }),
+});
+```
+
+---
+
+## OIDC provider for IRSA
+
+IAM Roles for Service Accounts (IRSA) allows Kubernetes pods to assume IAM roles without static credentials. This requires an OIDC identity provider associated with the cluster.
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+import * as tls from "@pulumi/tls";
+
+// Fetch the OIDC thumbprint
+const tlsCert = tls.getCertificateOutput({
+    url: cluster.identity.apply(id => id.oidcs[0].issuer),
+});
+
+const oidcProvider = new aws.iam.OpenIdConnectProvider("eks-oidc", {
+    clientIdLists: ["sts.amazonaws.com"],
+    thumbprintLists: [tlsCert.certificates[0].sha1Fingerprint],
+    url: cluster.identity.apply(id => id.oidcs[0].issuer),
+});
+
+// IAM role for a workload (e.g., the EBS CSI driver)
+const ebsCsiRole = new aws.iam.Role("ebs-csi-role", {
+    assumeRolePolicy: pulumi.all([
+        oidcProvider.arn,
+        oidcProvider.url,
+    ]).apply(([arn, url]) => JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Principal: { Federated: arn },
+            Action: "sts:AssumeRoleWithWebIdentity",
+            Condition: {
+                StringEquals: {
+                    [`${url}:sub`]: "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+                    [`${url}:aud`]: "sts.amazonaws.com",
+                },
+            },
+        }],
+    })),
+});
+
+new aws.iam.RolePolicyAttachment("ebs-csi-policy", {
+    role: ebsCsiRole.name,
+    policyArn: "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+});
+
+export const oidcProviderArn = oidcProvider.arn;
+export const ebsCsiRoleArn = ebsCsiRole.arn;
+```
+
+---
+
+## Complete cluster example
+
+The following program provisions an EKS cluster with a managed node group and the core add-ons.
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// --- Cluster IAM role ---
+const clusterRole = new aws.iam.Role("cluster", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: ["sts:AssumeRole", "sts:TagSession"],
+            Effect: "Allow",
+            Principal: { Service: "eks.amazonaws.com" },
+        }],
+    }),
+});
+const clusterPolicy = new aws.iam.RolePolicyAttachment("cluster-policy", {
+    policyArn: "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy",
+    role: clusterRole.name,
+});
+
+// --- Node IAM role ---
+const nodeRole = new aws.iam.Role("node", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: { Service: "ec2.amazonaws.com" },
+        }],
+    }),
+});
+for (const [id, arn] of Object.entries({
+    worker: "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+    cni: "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
+    registry: "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
+})) {
+    new aws.iam.RolePolicyAttachment(id, { role: nodeRole.name, policyArn: arn });
+}
+
+// --- Cluster ---
+const cluster = new aws.eks.Cluster("example", {
+    name: "example",
+    version: "1.31",
+    roleArn: clusterRole.arn,
+    accessConfig: { authenticationMode: "API" },
+    vpcConfig: { subnetIds: [subnetA.id, subnetB.id] },
+}, { dependsOn: [clusterPolicy] });
+
+// --- Node group ---
+const nodes = new aws.eks.NodeGroup("app-nodes", {
+    clusterName: cluster.name,
+    nodeRoleArn: nodeRole.arn,
+    subnetIds: [subnetA.id, subnetB.id],
+    instanceTypes: ["t3.medium"],
+    scalingConfig: { desiredSize: 2, minSize: 1, maxSize: 4 },
+    updateConfig: { maxUnavailable: 1 },
+});
+
+// --- Add-ons ---
+const vpcCni = new aws.eks.Addon("vpc-cni", {
+    clusterName: cluster.name,
+    addonName: "vpc-cni",
+});
+const coreDns = new aws.eks.Addon("coredns", {
+    clusterName: cluster.name,
+    addonName: "coredns",
+    resolveConflictsOnUpdate: "PRESERVE",
+}, { dependsOn: [nodes] }); // coredns needs nodes to schedule on
+
+export const clusterName = cluster.name;
+export const clusterEndpoint = cluster.endpoint;
+export const nodeGroupArn = nodes.arn;
+```

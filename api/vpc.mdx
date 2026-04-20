@@ -1,0 +1,458 @@
+---
+title: "aws.vpc — VPC endpoints, peering, and flow logs"
+description: "Reference for the aws.vpc module: configure VPC endpoints, peering connections, flow logs, and DHCP options in Amazon Virtual Private Cloud."
+---
+
+Amazon Virtual Private Cloud resources are split across two modules. Core networking primitives — `Vpc`, `Subnet`, `InternetGateway`, `RouteTable`, `NatGateway`, and `FlowLog` — live in **`aws.ec2`**. The smaller **`aws.vpc`** module contains higher-level helpers for endpoint service private DNS verification, route server management, and security group rule extensions. This page covers both.
+
+## Module overview
+
+<Tabs>
+  <Tab title="aws.ec2 (core)">
+    | Resource | Purpose |
+    |---|---|
+    | `aws.ec2.Vpc` | Create and configure a VPC |
+    | `aws.ec2.Subnet` | Public or private subnet |
+    | `aws.ec2.InternetGateway` | Attach internet access to a VPC |
+    | `aws.ec2.RouteTable` | Manage routing rules |
+    | `aws.ec2.RouteTableAssociation` | Associate a subnet with a route table |
+    | `aws.ec2.NatGateway` | Outbound internet for private subnets |
+    | `aws.ec2.VpcEndpoint` | Private access to AWS services |
+    | `aws.ec2.VpcPeeringConnection` | Peer two VPCs (requester side) |
+    | `aws.ec2.VpcPeeringConnectionAccepter` | Accept a peering request (accepter side) |
+    | `aws.ec2.FlowLog` | Capture IP traffic to S3 or CloudWatch |
+    | `aws.ec2.VpcDhcpOptions` | Custom DHCP option sets |
+  </Tab>
+  <Tab title="aws.vpc (helpers)">
+    | Resource | Purpose |
+    |---|---|
+    | `aws.vpc.EndpointPrivateDns` | Enable private DNS on an existing endpoint |
+    | `aws.vpc.EndpointServicePrivateDnsVerification` | Verify private DNS for endpoint services |
+    | `aws.vpc.RouteServer` | Manage a route server |
+    | `aws.vpc.RouteServerEndpoint` | Route server endpoint |
+    | `aws.vpc.RouteServerPeer` | Route server BGP peer |
+    | `aws.vpc.RouteServerPropagation` | Propagate routes from a route server |
+    | `aws.vpc.RouteServerVpcAssociation` | Associate a VPC with a route server |
+    | `aws.vpc.SecurityGroupEgressRule` | Standalone egress rule |
+    | `aws.vpc.SecurityGroupIngressRule` | Standalone ingress rule |
+    | `aws.vpc.SecurityGroupVpcAssociation` | Associate a security group with a VPC |
+  </Tab>
+</Tabs>
+
+---
+
+## aws.ec2.Vpc
+
+The `Vpc` resource creates an Amazon VPC with a given CIDR block. Enable DNS support and hostnames when you need EC2 instance hostnames or Route 53 private zones.
+
+<ParamField path="cidrBlock" type="string">
+  The IPv4 CIDR block for the VPC (e.g. `"10.0.0.0/16"`).
+</ParamField>
+
+<ParamField path="enableDnsSupport" type="boolean" default="true">
+  Enable DNS resolution within the VPC. Required for Route 53 private hosted zones.
+</ParamField>
+
+<ParamField path="enableDnsHostnames" type="boolean" default="false">
+  Assign DNS hostnames to instances with public IP addresses.
+</ParamField>
+
+<ParamField path="instanceTenancy" type="string" default='"default"'>
+  Tenancy of instances launched into the VPC. Accepted values: `"default"`, `"dedicated"`.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+    enableDnsSupport: true,
+    enableDnsHostnames: true,
+    tags: { Name: "main" },
+});
+```
+
+---
+
+## aws.ec2.Subnet
+
+<ParamField path="vpcId" type="string" required>
+  ID of the VPC that owns this subnet.
+</ParamField>
+
+<ParamField path="cidrBlock" type="string" required>
+  The IPv4 CIDR block for the subnet.
+</ParamField>
+
+<ParamField path="availabilityZone" type="string">
+  The AZ for the subnet. If omitted, AWS picks one.
+</ParamField>
+
+<ParamField path="mapPublicIpOnLaunch" type="boolean" default="false">
+  Set to `true` to make this a public subnet — instances get a public IP on launch.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+---
+
+## aws.ec2.InternetGateway
+
+Attach an internet gateway to a VPC to enable two-way internet traffic for public subnets.
+
+<ParamField path="vpcId" type="string">
+  The VPC ID to attach to. Can also be managed with a separate `aws.ec2.InternetGatewayAttachment`.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+---
+
+## aws.ec2.RouteTable
+
+<ParamField path="vpcId" type="string" required>
+  The VPC ID.
+</ParamField>
+
+<ParamField path="routes" type="RouteTableRoute[]">
+  Inline route definitions. Each route requires a destination (`cidrBlock` or `ipv6CidrBlock`) and a target (`gatewayId`, `natGatewayId`, `networkInterfaceId`, etc.).
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+## aws.ec2.RouteTableAssociation
+
+Associates a subnet (or internet gateway) with a route table. Use one association resource per subnet.
+
+<ParamField path="subnetId" type="string">
+  The subnet to associate. Conflicts with `gatewayId`.
+</ParamField>
+
+<ParamField path="gatewayId" type="string">
+  The internet gateway to associate. Conflicts with `subnetId`.
+</ParamField>
+
+<ParamField path="routeTableId" type="string" required>
+  The route table to associate with.
+</ParamField>
+
+---
+
+## aws.ec2.NatGateway
+
+A NAT gateway lets instances in private subnets initiate outbound IPv4 traffic to the internet. For a public NAT gateway, you must allocate an Elastic IP first. The NAT gateway must be placed in a **public** subnet.
+
+<ParamField path="allocationId" type="string">
+  The Elastic IP allocation ID. Required for public NAT gateways.
+</ParamField>
+
+<ParamField path="subnetId" type="string" required>
+  The subnet to place the NAT gateway in.
+</ParamField>
+
+<ParamField path="connectivityType" type="string" default='"public"'>
+  `"public"` or `"private"`. Private NAT gateways do not require an Elastic IP.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+<Note>
+  Declare an explicit `dependsOn` on the `InternetGateway` when creating a public NAT gateway. AWS requires the IGW to be attached before the NAT gateway is created.
+</Note>
+
+---
+
+## aws.ec2.VpcEndpoint
+
+VPC endpoints provide private connectivity to AWS services without routing traffic through the internet. There are three endpoint types: **Gateway** (S3, DynamoDB), **Interface** (most other services), and **GatewayLoadBalancer**.
+
+<ParamField path="vpcId" type="string" required>
+  The ID of the VPC.
+</ParamField>
+
+<ParamField path="serviceName" type="string" required>
+  The service name, e.g. `"com.amazonaws.us-east-1.s3"` or `"com.amazonaws.us-east-1.ec2"`.
+</ParamField>
+
+<ParamField path="vpcEndpointType" type="string" default='"Gateway"'>
+  `"Gateway"`, `"Interface"`, or `"GatewayLoadBalancer"`.
+</ParamField>
+
+<ParamField path="routeTableIds" type="string[]">
+  Route table IDs for Gateway endpoints.
+</ParamField>
+
+<ParamField path="subnetIds" type="string[]">
+  Subnet IDs for Interface or GatewayLoadBalancer endpoints.
+</ParamField>
+
+<ParamField path="securityGroupIds" type="string[]">
+  Security group IDs for Interface endpoints.
+</ParamField>
+
+<ParamField path="privateDnsEnabled" type="boolean">
+  Enable private DNS for Interface endpoints. Requires `enableDnsSupport` on the VPC.
+</ParamField>
+
+<CodeGroup>
+
+```typescript Gateway endpoint (S3)
+import * as aws from "@pulumi/aws";
+
+const s3Endpoint = new aws.ec2.VpcEndpoint("s3", {
+    vpcId: vpc.id,
+    serviceName: "com.amazonaws.us-east-1.s3",
+    // vpcEndpointType defaults to "Gateway"
+    routeTableIds: [privateRt.id],
+});
+```
+
+```typescript Interface endpoint (EC2)
+import * as aws from "@pulumi/aws";
+
+const ec2Endpoint = new aws.ec2.VpcEndpoint("ec2", {
+    vpcId: vpc.id,
+    serviceName: "com.amazonaws.us-east-1.ec2",
+    vpcEndpointType: "Interface",
+    subnetIds: [privateSubnet.id],
+    securityGroupIds: [endpointSg.id],
+    privateDnsEnabled: true,
+});
+```
+
+</CodeGroup>
+
+<Warning>
+  Do not manage the same endpoint's `routeTableIds` or `subnetIds` both inline on `VpcEndpoint` and via standalone `VpcEndpointRouteTableAssociation` / `VpcEndpointSubnetAssociation` resources. The two approaches conflict and will overwrite each other.
+</Warning>
+
+---
+
+## aws.ec2.VpcPeeringConnection
+
+Creates the **requester** side of a VPC peering connection. For same-account, same-region peering you can set `autoAccept: true`. For cross-account or cross-region peering, set `autoAccept: false` and use `VpcPeeringConnectionAccepter` in the accepter account.
+
+<ParamField path="vpcId" type="string" required>
+  The ID of the requester VPC.
+</ParamField>
+
+<ParamField path="peerVpcId" type="string" required>
+  The ID of the target (peer) VPC.
+</ParamField>
+
+<ParamField path="peerOwnerId" type="string">
+  The AWS account ID of the peer VPC owner. Defaults to the caller's account.
+</ParamField>
+
+<ParamField path="peerRegion" type="string">
+  The AWS region of the peer VPC. Required for inter-region peering.
+</ParamField>
+
+<ParamField path="autoAccept" type="boolean">
+  Auto-accept the peering request. Only valid for same-account, same-region peering. Do not set to `true` for cross-account peering.
+</ParamField>
+
+## aws.ec2.VpcPeeringConnectionAccepter
+
+Manages the **accepter** side of a peering connection. Use this in conjunction with `VpcPeeringConnection` for cross-account or cross-region peering.
+
+<ParamField path="vpcPeeringConnectionId" type="string" required>
+  The ID of the peering connection from the requester's `VpcPeeringConnection` resource.
+</ParamField>
+
+<ParamField path="autoAccept" type="boolean">
+  Set to `true` to accept the connection.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+// Requester side
+const peeringRequest = new aws.ec2.VpcPeeringConnection("requester", {
+    vpcId: mainVpc.id,
+    peerVpcId: peerVpc.id,
+    peerOwnerId: peerAccountId,
+    peerRegion: "us-west-2",
+    autoAccept: false,
+    tags: { Side: "Requester" },
+});
+
+// Accepter side (in the peer account/region provider)
+const peeringAccepter = new aws.ec2.VpcPeeringConnectionAccepter("accepter", {
+    region: "us-west-2",
+    vpcPeeringConnectionId: peeringRequest.id,
+    autoAccept: true,
+    tags: { Side: "Accepter" },
+});
+```
+
+---
+
+## aws.ec2.FlowLog
+
+Capture IP traffic for a VPC, subnet, or network interface. In v7, always use `logDestination` (not `logGroupName`). Set `logDestinationType` to control the destination: `"cloud-watch-logs"` (default) or `"s3"`.
+
+<ParamField path="vpcId" type="string">
+  The VPC to capture traffic for. Specify exactly one of `vpcId`, `subnetId`, or `eniId`.
+</ParamField>
+
+<ParamField path="trafficType" type="string" required>
+  `"ACCEPT"`, `"REJECT"`, or `"ALL"`.
+</ParamField>
+
+<ParamField path="logDestination" type="string" required>
+  ARN of the CloudWatch Log Group or S3 bucket to deliver logs to.
+</ParamField>
+
+<ParamField path="logDestinationType" type="string" default='"cloud-watch-logs"'>
+  `"cloud-watch-logs"`, `"s3"`, or `"kinesis-data-firehose"`.
+</ParamField>
+
+<ParamField path="iamRoleArn" type="string">
+  IAM role ARN with permission to write to the destination. Required for CloudWatch Logs.
+</ParamField>
+
+<CodeGroup>
+
+```typescript CloudWatch Logs
+import * as aws from "@pulumi/aws";
+
+const logGroup = new aws.cloudwatch.LogGroup("vpcFlowLogs", {
+    name: "/aws/vpc/flow-logs",
+});
+
+const flowLogRole = new aws.iam.Role("flowLogRole", {
+    assumeRolePolicy: aws.iam.getPolicyDocument({
+        statements: [{
+            effect: "Allow",
+            principals: [{ type: "Service", identifiers: ["vpc-flow-logs.amazonaws.com"] }],
+            actions: ["sts:AssumeRole"],
+        }],
+    }).then(d => d.json),
+});
+
+const flowLog = new aws.ec2.FlowLog("vpcFlowLog", {
+    vpcId: vpc.id,
+    trafficType: "ALL",
+    logDestination: logGroup.arn,
+    iamRoleArn: flowLogRole.arn,
+});
+```
+
+```typescript S3
+import * as aws from "@pulumi/aws";
+
+const flowLogBucket = new aws.s3.Bucket("flow-logs", { bucket: "my-vpc-flow-logs" });
+
+const flowLog = new aws.ec2.FlowLog("vpcFlowLog", {
+    vpcId: vpc.id,
+    trafficType: "ALL",
+    logDestination: flowLogBucket.arn,
+    logDestinationType: "s3",
+});
+```
+
+</CodeGroup>
+
+---
+
+## Complete VPC setup example
+
+The following example creates a VPC with one public subnet and one private subnet, an internet gateway, a NAT gateway for private egress, and the necessary route tables.
+
+```typescript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// VPC
+const vpc = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+    enableDnsSupport: true,
+    enableDnsHostnames: true,
+    tags: { Name: "main" },
+});
+
+// Internet Gateway
+const igw = new aws.ec2.InternetGateway("main", {
+    vpcId: vpc.id,
+    tags: { Name: "main-igw" },
+});
+
+// Public subnet
+const publicSubnet = new aws.ec2.Subnet("public", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.1.0/24",
+    availabilityZone: "us-east-1a",
+    mapPublicIpOnLaunch: true,
+    tags: { Name: "public" },
+});
+
+// Private subnet
+const privateSubnet = new aws.ec2.Subnet("private", {
+    vpcId: vpc.id,
+    cidrBlock: "10.0.2.0/24",
+    availabilityZone: "us-east-1a",
+    tags: { Name: "private" },
+});
+
+// Elastic IP for NAT Gateway
+const natEip = new aws.ec2.Eip("nat", { domain: "vpc" });
+
+// NAT Gateway (in the public subnet)
+const natGateway = new aws.ec2.NatGateway("main", {
+    allocationId: natEip.id,
+    subnetId: publicSubnet.id,
+    tags: { Name: "main-nat" },
+}, { dependsOn: [igw] });
+
+// Public route table — default route to IGW
+const publicRt = new aws.ec2.RouteTable("public", {
+    vpcId: vpc.id,
+    routes: [{
+        cidrBlock: "0.0.0.0/0",
+        gatewayId: igw.id,
+    }],
+    tags: { Name: "public-rt" },
+});
+
+// Private route table — default route to NAT Gateway
+const privateRt = new aws.ec2.RouteTable("private", {
+    vpcId: vpc.id,
+    routes: [{
+        cidrBlock: "0.0.0.0/0",
+        natGatewayId: natGateway.id,
+    }],
+    tags: { Name: "private-rt" },
+});
+
+// Route table associations
+const publicRta = new aws.ec2.RouteTableAssociation("public", {
+    subnetId: publicSubnet.id,
+    routeTableId: publicRt.id,
+});
+
+const privateRta = new aws.ec2.RouteTableAssociation("private", {
+    subnetId: privateSubnet.id,
+    routeTableId: privateRt.id,
+});
+
+export const vpcId = vpc.id;
+export const publicSubnetId = publicSubnet.id;
+export const privateSubnetId = privateSubnet.id;
+```
+
+<Tip>
+  Place NAT gateways in every AZ you use for high availability. A single NAT gateway is a regional single point of failure — if its AZ goes down, private subnets in other AZs lose outbound connectivity.
+</Tip>

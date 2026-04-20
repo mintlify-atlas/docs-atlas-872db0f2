@@ -1,0 +1,251 @@
+---
+title: "AWS Provider configuration options reference"
+description: "Full reference for all Pulumi AWS Provider configuration options, set via pulumi config set aws:<option> or the Provider constructor."
+---
+
+Every option for the Pulumi AWS Provider can be set in two complementary ways: through the Pulumi stack configuration system using `pulumi config set aws:<option>`, or programmatically via arguments to the `aws.Provider` constructor. Stack configuration applies to the implicit, package-wide provider used by all resources that do not specify a `provider` resource option. The constructor lets you create multiple named providers with different settings in the same stack.
+
+## Setting configuration
+
+```bash
+# Set a simple string value
+pulumi config set aws:region us-east-1
+
+# Set a secret value (encrypted in state)
+pulumi config set --secret aws:secretKey AKIA...
+
+# Set a nested structured value (v7 assumeRoles syntax)
+pulumi config set --path 'aws:assumeRoles[0].roleArn' arn:aws:iam::123456789012:role/MyRole
+pulumi config set --path 'aws:assumeRoles[0].sessionName' pulumi-session
+```
+
+In a `Pulumi.<stack>.yaml` file, configuration values look like:
+
+```yaml
+config:
+  aws:region: us-east-1
+  aws:profile: prod-account
+  aws:assumeRoles:
+    - roleArn: arn:aws:iam::123456789012:role/MyRole
+      sessionName: pulumi-session
+  aws:defaultTags:
+    tags:
+      Environment: production
+      ManagedBy: pulumi
+```
+
+<Note>
+  In the `aws.Provider` constructor, option names use camelCase (TypeScript/Go), snake_case (Python), or PascalCase (.NET). In `pulumi config set` and YAML files, use camelCase — for example, `aws:defaultTags`, not `aws:default_tags`.
+</Note>
+
+## Complete configuration reference
+
+### Authentication
+
+<ParamField path="region" type="string" required>
+  The AWS region where all API operations will take place. Examples: `us-east-1`, `us-west-2`, `eu-central-1`, `ap-southeast-1`.
+
+  **Environment variable:** `AWS_REGION` or `AWS_DEFAULT_REGION`
+</ParamField>
+
+<ParamField path="accessKey" type="string">
+  The AWS access key ID for API operations. Retrieve it from the **Security & Credentials** section of the AWS console. Stored as a Pulumi secret.
+
+  **Environment variable:** `AWS_ACCESS_KEY_ID`
+</ParamField>
+
+<ParamField path="secretKey" type="string">
+  The AWS secret access key for API operations. Stored as a Pulumi secret.
+
+  **Environment variable:** `AWS_SECRET_ACCESS_KEY`
+</ParamField>
+
+<ParamField path="token" type="string">
+  A session or MFA token. Required when using temporary security credentials (for example, credentials vended by STS `AssumeRole` or an MFA-protected API call). Stored as a Pulumi secret.
+
+  **Environment variable:** `AWS_SESSION_TOKEN`
+</ParamField>
+
+<ParamField path="profile" type="string">
+  The named profile from `~/.aws/credentials` (or `~/.aws/config`) to use for API operations. When not set, the `default` profile is used.
+
+  **Environment variable:** `AWS_PROFILE`
+</ParamField>
+
+<ParamField path="sharedCredentialsFile" type="string">
+  Path to the shared credentials file. Defaults to `~/.aws/credentials` when not set.
+
+  **Constructor name (v7):** `sharedCredentialsFiles` (list of paths)
+</ParamField>
+
+### Role assumption
+
+<ParamField path="assumeRoles" type="object[]">
+  A list of IAM roles to assume in sequence before making API calls. Introduced in provider v7 as a list, replacing the single `assumeRole` object from v6.
+
+  To set via `pulumi config set`, use structured configuration:
+
+  ```bash
+  pulumi config set --path 'aws:assumeRoles[0].roleArn' arn:aws:iam::123456789012:role/MyRole
+  ```
+
+  Each entry supports the following properties:
+
+  | Property | Type | Description |
+  |---|---|---|
+  | `roleArn` | string | ARN of the IAM role to assume. |
+  | `sessionName` | string | Session name for the assumed-role session. |
+  | `externalId` | string | External ID required by the role's trust policy. |
+  | `durationSeconds` | number | Session lifetime in seconds. |
+  | `policy` | string | Inline IAM policy JSON to further restrict permissions. |
+  | `policyArns` | string[] | ARNs of managed IAM policies to further restrict permissions. |
+  | `tags` | object | Key-value session tags to attach to the assumed-role session. |
+  | `transitiveTagKeys` | string[] | Tag keys to pass through to subsequent sessions. |
+</ParamField>
+
+<ParamField path="assumeRoleWithWebIdentity" type="object">
+  Assume an IAM role using a web identity (OIDC) token. Useful for GitHub Actions, GitLab CI, Azure DevOps, and other OIDC-capable CI systems.
+
+  | Property | Type | Description |
+  |---|---|---|
+  | `roleArn` | string | ARN of the IAM role to assume. |
+  | `sessionName` | string | Session name for the assumed-role session. |
+  | `webIdentityToken` | string | Raw OIDC ID token value. |
+  | `webIdentityTokenFile` | string | Path to a file containing the OIDC ID token. |
+  | `durationSeconds` | number | Session lifetime in seconds. |
+  | `policy` | string | Inline IAM policy JSON to further restrict permissions. |
+  | `policyArns` | string[] | ARNs of managed IAM policies to further restrict permissions. |
+</ParamField>
+
+### Account controls
+
+<ParamField path="allowedAccountIds" type="string[]">
+  An allowlist of AWS account IDs. If the caller's resolved account ID is not in this list, Pulumi returns an error before making any changes. Use this to prevent accidentally targeting the wrong account. Conflicts with `forbiddenAccountIds`.
+</ParamField>
+
+<ParamField path="forbiddenAccountIds" type="string[]">
+  A denylist of AWS account IDs. If the caller's resolved account ID matches any entry, Pulumi returns an error before making any changes. Conflicts with `allowedAccountIds`.
+</ParamField>
+
+### Tagging
+
+<ParamField path="defaultTags" type="object">
+  A configuration block that applies a default set of tags to every resource managed by this provider. Resource-level `tags` arguments add to or override individual default keys.
+
+  | Property | Type | Description |
+  |---|---|---|
+  | `tags` | object | Key-value map of tags applied to all resources. |
+
+  ```bash
+  pulumi config set --path 'aws:defaultTags.tags.Environment' production
+  ```
+</ParamField>
+
+<ParamField path="ignoreTags" type="object">
+  A configuration block that prevents the provider from tracking or displaying diffs for specific tag keys or prefixes. Useful when external tools (AWS Config, cost allocation, security scanners) manage certain tags outside of Pulumi.
+
+  | Property | Type | Description |
+  |---|---|---|
+  | `keys` | string[] | Exact tag key names to ignore across all resources. |
+  | `keyPrefixes` | string[] | Tag key prefixes to ignore across all resources. |
+
+  <Warning>
+    If a resource still declares an ignored tag key in its `tags` argument, Pulumi will show a perpetual diff. Remove the key from the resource's `tags` argument or also add `ignoreChanges` for that property.
+  </Warning>
+</ParamField>
+
+### Retry behavior
+
+<ParamField path="maxRetries" type="number">
+  The maximum number of times the provider retries a failed AWS API request before surfacing an error. The default is determined by the AWS SDK.
+</ParamField>
+
+<ParamField path="retryMode" type="string">
+  Specifies how retries are attempted. Valid values are `standard` and `adaptive`. Adaptive mode uses a token-bucket algorithm to avoid thundering-herd retries.
+
+  **Environment variable:** `AWS_RETRY_MODE`
+</ParamField>
+
+### Endpoint overrides
+
+<ParamField path="dynamodbEndpoint" type="string">
+  Override the default DynamoDB endpoint URL. Typically used to connect to `dynamodb-local` during development.
+
+  **Constructor name:** `endpoints` (list — see below)
+</ParamField>
+
+<ParamField path="kinesisEndpoint" type="string">
+  Override the default Kinesis endpoint URL. Typically used to connect to `kinesalite` during development.
+
+  **Constructor name:** `endpoints` (list — see below)
+</ParamField>
+
+<Note>
+  In the `aws.Provider` constructor, all endpoint overrides are specified through the `endpoints` list argument rather than individual named options. Each entry in the list is a `ProviderEndpoint` object with a service-specific field. Example:
+
+  ```typescript
+  const provider = new aws.Provider("local-provider", {
+      region: "us-east-1",
+      endpoints: [{
+          dynamodb: "http://localhost:8000",
+      }],
+  });
+  ```
+</Note>
+
+### S3 behavior
+
+<ParamField path="s3ForcePathStyle" type="boolean">
+  Force S3 requests to use path-style addressing (`https://s3.amazonaws.com/BUCKET/KEY`) instead of the default virtual-hosted-style (`https://BUCKET.s3.amazonaws.com/KEY`). Required for S3-compatible services that do not support virtual hosting.
+
+  **Constructor name:** `s3UsePathStyle`
+</ParamField>
+
+### Security and validation
+
+<ParamField path="insecure" type="boolean">
+  Allow the provider to make insecure (non-TLS) requests. Default: `false`. Only use this for local testing.
+</ParamField>
+
+<ParamField path="skipCredentialsValidation" type="boolean">
+  Skip credentials validation via the STS API. Useful for AWS-compatible API implementations that do not support STS. Default: `false`.
+</ParamField>
+
+<ParamField path="skipMetadataApiCheck" type="boolean">
+  Skip the EC2 Instance Metadata Service (IMDS) check. Default: `true` as of provider v3.28.1. Set to `false` to allow credential retrieval from EC2 instance profiles or ECS task roles.
+
+  ```bash
+  pulumi config set aws:skipMetadataApiCheck false
+  ```
+</ParamField>
+
+<ParamField path="skipRegionValidation" type="boolean">
+  Skip static validation of the region name. Useful for AWS-like APIs or regions not yet publicly available. Default: `true`.
+</ParamField>
+
+<ParamField path="skipRequestingAccountId" type="boolean">
+  Skip the automatic lookup of the AWS account ID. Useful for AWS API implementations that do not expose IAM or STS endpoints.
+</ParamField>
+
+<ParamField path="useFipsEndpoint" type="boolean">
+  Resolve FIPS-compliant service endpoints where available. Required for workloads subject to FedRAMP or other FIPS 140-2 mandates.
+</ParamField>
+
+## Environment variable quick reference
+
+| Environment variable | Corresponding option |
+|---|---|
+| `AWS_REGION` / `AWS_DEFAULT_REGION` | `region` |
+| `AWS_ACCESS_KEY_ID` | `accessKey` |
+| `AWS_SECRET_ACCESS_KEY` | `secretKey` |
+| `AWS_SESSION_TOKEN` | `token` |
+| `AWS_PROFILE` | `profile` |
+| `AWS_RETRY_MODE` | `retryMode` |
+| `AWS_CA_BUNDLE` | `customCaBundle` |
+| `AWS_EC2_METADATA_SERVICE_ENDPOINT` | `ec2MetadataServiceEndpoint` |
+| `AWS_EC2_METADATA_SERVICE_ENDPOINT_MODE` | `ec2MetadataServiceEndpointMode` |
+| `AWS_S3_US_EAST_1_REGIONAL_ENDPOINT` | `s3UsEast1RegionalEndpoint` |
+| `HTTP_PROXY` / `httpProxy` | `httpProxy` |
+| `HTTPS_PROXY` / `httpsProxy` | `httpsProxy` |
+| `NO_PROXY` / `noProxy` | `noProxy` |
+| `TF_AWS_TAG_POLICY_COMPLIANCE` | `tagPolicyCompliance` |

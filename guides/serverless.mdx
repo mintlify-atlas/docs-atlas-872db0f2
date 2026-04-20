@@ -1,0 +1,315 @@
+---
+title: "Build serverless applications on AWS with Pulumi"
+description: "Create Lambda functions, API Gateway endpoints, SQS triggers, and S3 event handlers using the Pulumi AWS Provider's serverless APIs."
+---
+
+The Pulumi AWS Provider gives you full control over every piece of your serverless stack — from the Lambda execution role to API Gateway integrations, S3 event notifications, and SQS event source mappings — all expressed as typed infrastructure code. This guide walks through each building block with real examples.
+
+## Lambda function basics
+
+A `aws.lambda.Function` requires an execution role, a code asset, a runtime, and a handler entrypoint.
+
+<Steps>
+  <Step title="Create the execution role">
+    Every Lambda function needs an IAM role that the Lambda service can assume.
+
+    <CodeGroup>
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const lambdaRole = new aws.iam.Role("lambdaRole", {
+        assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+            Service: "lambda.amazonaws.com",
+        }),
+    });
+
+    new aws.iam.RolePolicyAttachment("lambdaBasicExecution", {
+        role: lambdaRole.name,
+        policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+    });
+    ```
+
+    ```python __main__.py
+    import pulumi_aws as aws
+
+    lambda_role = aws.iam.Role("lambdaRole",
+        assume_role_policy=aws.iam.get_policy_document(
+            statements=[aws.iam.GetPolicyDocumentStatementArgs(
+                effect="Allow",
+                principals=[aws.iam.GetPolicyDocumentStatementPrincipalArgs(
+                    type="Service",
+                    identifiers=["lambda.amazonaws.com"],
+                )],
+                actions=["sts:AssumeRole"],
+            )]
+        ).json,
+    )
+
+    aws.iam.RolePolicyAttachment("lambdaBasicExecution",
+        role=lambda_role.name,
+        policy_arn=aws.iam.ManagedPolicy.AWS_LAMBDA_BASIC_EXECUTION_ROLE,
+    )
+    ```
+
+    </CodeGroup>
+  </Step>
+
+  <Step title="Package and deploy the function">
+    Use `pulumi.asset.AssetArchive` to bundle your handler code into the Lambda deployment package.
+
+    <CodeGroup>
+
+    ```typescript index.ts
+    import * as pulumi from "@pulumi/pulumi";
+    import * as aws from "@pulumi/aws";
+
+    const fn = new aws.lambda.Function("myFunction", {
+        role: lambdaRole.arn,
+        runtime: aws.lambda.Runtime.NodeJS20dX,
+        handler: "index.handler",
+        code: new pulumi.asset.AssetArchive({
+            "index.js": new pulumi.asset.StringAsset(`
+                exports.handler = async (event) => ({
+                    statusCode: 200,
+                    body: JSON.stringify({ message: "Hello from Lambda" }),
+                });
+            `),
+        }),
+        environment: {
+            variables: {
+                STAGE: "production",
+            },
+        },
+        timeout: 30,
+        memorySize: 256,
+    });
+
+    export const functionArn = fn.arn;
+    ```
+
+    ```python __main__.py
+    import pulumi
+    import pulumi_aws as aws
+
+    fn = aws.lambda_.Function("myFunction",
+        role=lambda_role.arn,
+        runtime=aws.lambda_.Runtime.NODE_JS20D_X,
+        handler="index.handler",
+        code=pulumi.FileArchive("./handler"),
+        environment=aws.lambda_.FunctionEnvironmentArgs(
+            variables={"STAGE": "production"},
+        ),
+        timeout=30,
+        memory_size=256,
+    )
+
+    pulumi.export("function_arn", fn.arn)
+    ```
+
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## CallbackFunction: Lambda from a TypeScript function
+
+`aws.lambda.CallbackFunction` lets you write a Lambda handler as an inline TypeScript function. Pulumi serializes the closure — including any captured Pulumi outputs — and deploys it automatically.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Simplest form: auto-created role with basic execution policy
+const simple = new aws.lambda.CallbackFunction("simple", {
+    callback: async (event: any) => ({ success: true }),
+});
+
+// Bring your own role
+const role = new aws.iam.Role("role", {
+    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+        Service: "lambda.amazonaws.com",
+    }),
+});
+
+const withRole = new aws.lambda.CallbackFunction("withRole", {
+    role: role,
+    callback: async (event: any) => ({ success: true }),
+});
+
+// Attach managed policies instead of a custom role
+const withPolicies = new aws.lambda.CallbackFunction("withPolicies", {
+    policies: [aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole],
+    callback: async (event: any) => ({ success: true }),
+});
+
+// Use callbackFactory to capture expensive initialization once
+const withFactory = new aws.lambda.CallbackFunction("withFactory", {
+    callbackFactory: () => {
+        const result = { initialized: true };   // runs once on cold start
+        return async (event: any) => result;
+    },
+});
+
+export const arns = [simple, withRole, withPolicies, withFactory].map(f => f.arn);
+```
+
+<Note>
+`CallbackFunction` is a TypeScript/JavaScript-only feature. It works by serializing the function closure at deployment time using the `@pulumi/pulumi` runtime. Python, Go, and other language users should use `aws.lambda.Function` with a file asset instead.
+</Note>
+
+## CloudWatch log group for Lambda
+
+By default AWS auto-creates a log group, but managing it explicitly lets you control retention and avoid orphaned logs.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+const logGroup = new aws.cloudwatch.LogGroup("functionLogs", {
+    name: pulumi.interpolate`/aws/lambda/${fn.name}`,
+    retentionInDays: 14,
+});
+```
+
+## API Gateway REST API connected to Lambda
+
+Wire a Lambda function to an API Gateway endpoint so it responds to HTTP requests.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Create the REST API
+const api = new aws.apigateway.RestApi("myApi", {
+    description: "Serverless REST API",
+});
+
+// Create a resource path: /hello
+const resource = new aws.apigateway.Resource("helloResource", {
+    restApi: api.id,
+    parentId: api.rootResourceId,
+    pathPart: "hello",
+});
+
+// Allow any HTTP method
+const method = new aws.apigateway.Method("helloMethod", {
+    restApi: api.id,
+    resourceId: resource.id,
+    httpMethod: "GET",
+    authorization: "NONE",
+});
+
+// Integrate with the Lambda function
+const integration = new aws.apigateway.Integration("helloIntegration", {
+    restApi: api.id,
+    resourceId: resource.id,
+    httpMethod: method.httpMethod,
+    type: "AWS_PROXY",
+    integrationHttpMethod: "POST",
+    uri: fn.invokeArn,
+});
+
+// Grant API Gateway permission to invoke the function
+const permission = new aws.lambda.Permission("apiGatewayPermission", {
+    action: "lambda:InvokeFunction",
+    function: fn.name,
+    principal: "apigateway.amazonaws.com",
+    sourceArn: pulumi.interpolate`${api.executionArn}/*/*`,
+});
+
+// Deploy and expose a stage
+const deployment = new aws.apigateway.Deployment("apiDeployment", {
+    restApi: api.id,
+}, { dependsOn: [integration] });
+
+const stage = new aws.apigateway.Stage("apiStage", {
+    restApi: api.id,
+    deployment: deployment.id,
+    stageName: "prod",
+});
+
+export const apiUrl = pulumi.interpolate`${stage.invokeUrl}/hello`;
+```
+
+## S3 bucket notifications triggering Lambda
+
+React to object events in S3 by connecting a bucket notification to your Lambda function.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+const bucket = new aws.s3.Bucket("uploads");
+
+// Grant S3 permission to invoke the function
+const s3Permission = new aws.lambda.Permission("s3Permission", {
+    action: "lambda:InvokeFunction",
+    function: fn.name,
+    principal: "s3.amazonaws.com",
+    sourceArn: bucket.arn,
+});
+
+// Trigger Lambda on every object creation
+const notification = new aws.s3.BucketNotification("bucketNotification", {
+    bucket: bucket.id,
+    lambdaFunctions: [{
+        lambdaFunctionArn: fn.arn,
+        events: ["s3:ObjectCreated:*"],
+        filterPrefix: "uploads/",
+        filterSuffix: ".jpg",
+    }],
+}, { dependsOn: [s3Permission] });
+```
+
+<Tip>
+Always create the `aws.lambda.Permission` before the bucket notification. S3 validates that it can invoke the function when the notification is registered.
+</Tip>
+
+## SQS queue event source mapping
+
+Poll an SQS queue and invoke Lambda for each batch of messages.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+const queue = new aws.sqs.Queue("workQueue", {
+    visibilityTimeoutSeconds: 60,
+});
+
+// Allow Lambda's execution role to read from the queue
+new aws.iam.RolePolicyAttachment("sqsAccess", {
+    role: lambdaRole.name,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaSQSQueueExecutionRole,
+});
+
+// Map the queue as an event source for the Lambda function
+const eventSourceMapping = new aws.lambda.EventSourceMapping("sqsMapping", {
+    eventSourceArn: queue.arn,
+    functionName: fn.arn,
+    batchSize: 10,
+    functionResponseTypes: ["ReportBatchItemFailures"],
+});
+
+export const queueUrl = queue.url;
+```
+
+<Note>
+`functionResponseTypes: ["ReportBatchItemFailures"]` lets your Lambda report partial batch failures so SQS only retries the failed messages, not the whole batch.
+</Note>
+
+## Putting it all together
+
+A complete serverless stack combines all of these patterns. Here is the recommended resource ordering:
+
+<Steps>
+  <Step title="IAM role and policies">Create the execution role and attach the policies your function needs.</Step>
+  <Step title="Lambda function">Deploy the function code with the role attached.</Step>
+  <Step title="CloudWatch log group">Create the log group with a retention policy before the function is invoked.</Step>
+  <Step title="Event sources">Wire up S3, SQS, or API Gateway, granting `lambda:InvokeFunction` permission for each trigger.</Step>
+  <Step title="Exports">Export URLs and ARNs that downstream stacks or CI systems need.</Step>
+</Steps>
+
+<CardGroup cols={2}>
+  <Card title="Lambda API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/lambda/">
+    Full resource documentation for `aws.lambda.*`.
+  </Card>
+  <Card title="API Gateway API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/apigateway/">
+    Full resource documentation for `aws.apigateway.*`.
+  </Card>
+</CardGroup>

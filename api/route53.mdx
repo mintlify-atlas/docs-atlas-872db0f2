@@ -1,0 +1,374 @@
+---
+title: "aws.route53 — DNS hosted zones and records"
+description: "Reference for the aws.route53 module: manage Route 53 hosted zones, create A, CNAME, and alias DNS records, configure health checks and routing policies."
+---
+
+The `aws.route53` module manages Amazon Route 53 resources: hosted zones, DNS records, health checks, DNSSEC signing, resolver rules, and traffic policies. Public hosted zones serve internet DNS. Private hosted zones resolve only within specific VPCs.
+
+## aws.route53.Zone
+
+A hosted zone is a container for DNS records for a domain. Route 53 automatically creates `NS` and `SOA` records when you create a zone.
+
+<ParamField path="name" type="string" required>
+  The domain name, e.g. `"example.com"`. Route 53 accepts the name with or without a trailing dot.
+</ParamField>
+
+<ParamField path="comment" type="string">
+  A comment to associate with the hosted zone.
+</ParamField>
+
+<ParamField path="vpcs" type="ZoneVpc[]">
+  Associate with one or more VPCs to create a **private** hosted zone. Each entry has `vpcId` and optionally `vpcRegion`. Omit this field to create a public zone.
+</ParamField>
+
+<ParamField path="delegationSetId" type="string">
+  ID of a reusable delegation set to assign to this zone.
+</ParamField>
+
+<ParamField path="forceDestroy" type="boolean" default="false">
+  Destroy all records inside the zone when the zone is deleted, instead of failing.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+<CodeGroup>
+
+```typescript Public zone
+import * as aws from "@pulumi/aws";
+
+const zone = new aws.route53.Zone("primary", {
+    name: "example.com",
+    comment: "Managed by Pulumi",
+});
+
+export const zoneId = zone.zoneId;
+export const nameServers = zone.nameServers;
+```
+
+```typescript Private zone
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.Vpc("main", {
+    cidrBlock: "10.0.0.0/16",
+    enableDnsSupport: true,
+    enableDnsHostnames: true,
+});
+
+const privateZone = new aws.route53.Zone("private", {
+    name: "internal.example.com",
+    vpcs: [{ vpcId: vpc.id }],
+    comment: "Private DNS for internal services",
+});
+```
+
+</CodeGroup>
+
+<Note>
+  Private hosted zones require `enableDnsSupport: true` on every associated VPC. Without it, Route 53 resolvers cannot answer queries.
+</Note>
+
+---
+
+## aws.route53.Record
+
+A DNS record within a hosted zone. Use `records` for standard records and `aliases` for Route 53 alias records (ALB, CloudFront, S3 static sites, etc.).
+
+<ParamField path="zoneId" type="string" required>
+  The hosted zone ID. Reference `zone.zoneId` (not `zone.id`).
+</ParamField>
+
+<ParamField path="name" type="string" required>
+  The record name (fully-qualified or relative to the zone root). Use `""` or `"@"` for the zone apex.
+</ParamField>
+
+<ParamField path="type" type="string | RecordType" required>
+  The DNS record type. Use the `aws.route53.RecordType` enum for type safety.
+</ParamField>
+
+<ParamField path="ttl" type="number">
+  Time-to-live in seconds. Required for non-alias records. **Do not set** for alias records — Route 53 forces a 60-second TTL on aliases.
+</ParamField>
+
+<ParamField path="records" type="string[]">
+  List of record values. Required for non-alias records. Conflicts with `aliases`.
+</ParamField>
+
+<ParamField path="aliases" type="RecordAlias[]">
+  Alias target block. Conflicts with `ttl` and `records`. Each entry has `name` (target DNS name), `zoneId` (target hosted zone ID), and `evaluateTargetHealth` (boolean).
+</ParamField>
+
+<ParamField path="allowOverwrite" type="boolean" default="false">
+  Allow overwriting an existing record. Useful for managing the auto-created `NS` and `SOA` records without importing them.
+</ParamField>
+
+<ParamField path="setIdentifier" type="string">
+  Unique identifier for records with routing policies (weighted, latency, failover, geolocation).
+</ParamField>
+
+## RecordType enum
+
+| Enum value | Description |
+|---|---|
+| `RecordType.A` | IPv4 address |
+| `RecordType.AAAA` | IPv6 address |
+| `RecordType.CNAME` | Canonical name |
+| `RecordType.MX` | Mail exchange |
+| `RecordType.TXT` | Text record |
+| `RecordType.NS` | Name server |
+| `RecordType.SOA` | Start of authority |
+| `RecordType.CAA` | Certification authority authorization |
+| `RecordType.SRV` | Service locator |
+| `RecordType.PTR` | Pointer (reverse DNS) |
+| `RecordType.SPF` | Sender Policy Framework (legacy; use TXT) |
+
+---
+
+## aws.route53.HealthCheck
+
+Health checks monitor an endpoint or a CloudWatch alarm and are used with routing policies to remove unhealthy endpoints from DNS responses.
+
+<ParamField path="type" type="string" required>
+  Check type: `"HTTP"`, `"HTTPS"`, `"HTTP_STR_MATCH"`, `"HTTPS_STR_MATCH"`, `"TCP"`, `"CALCULATED"`, or `"CLOUDWATCH_METRIC"`.
+</ParamField>
+
+<ParamField path="fqdn" type="string">
+  Fully-qualified domain name of the endpoint to check. Use instead of `ipAddress` for hostname-based checks.
+</ParamField>
+
+<ParamField path="port" type="number">
+  Port to check (e.g. `80`, `443`).
+</ParamField>
+
+<ParamField path="resourcePath" type="string">
+  Path to request during the check (e.g. `"/health"`). Used for HTTP/HTTPS checks.
+</ParamField>
+
+<ParamField path="failureThreshold" type="number">
+  Number of consecutive failures before Route 53 marks the endpoint unhealthy. Range: 1–10.
+</ParamField>
+
+<ParamField path="requestInterval" type="number" default="30">
+  How often Route 53 sends health check requests, in seconds. `10` or `30`.
+</ParamField>
+
+<ParamField path="searchString" type="string">
+  String to search for in the response body. Required for `HTTP_STR_MATCH` and `HTTPS_STR_MATCH` types.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const healthCheck = new aws.route53.HealthCheck("api", {
+    fqdn: "api.example.com",
+    port: 443,
+    type: "HTTPS",
+    resourcePath: "/health",
+    failureThreshold: 3,
+    requestInterval: 30,
+    tags: { Name: "api-health-check" },
+});
+```
+
+---
+
+## aws.route53.getZone
+
+Look up an existing hosted zone by name, zone ID, or tags. Returns the zone ID and other metadata without creating any resource.
+
+<ParamField path="name" type="string">
+  The domain name to search for.
+</ParamField>
+
+<ParamField path="zoneId" type="string">
+  The zone ID to look up directly.
+</ParamField>
+
+<ParamField path="privateZone" type="boolean">
+  Filter to private zones only.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Match a zone by its exact tag set.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const zone = await aws.route53.getZone({ name: "example.com." });
+
+const record = new aws.route53.Record("api", {
+    zoneId: zone.zoneId,
+    name: "api.example.com",
+    type: aws.route53.RecordType.A,
+    ttl: 300,
+    records: ["192.0.2.10"],
+});
+```
+
+---
+
+## Examples
+
+### Simple A record
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const zone = new aws.route53.Zone("primary", { name: "example.com" });
+
+const www = new aws.route53.Record("www", {
+    zoneId: zone.zoneId,
+    name: "www.example.com",
+    type: aws.route53.RecordType.A,
+    ttl: 300,
+    records: ["203.0.113.10"],
+});
+```
+
+### Alias record pointing to an ALB
+
+Alias records are free, update without a TTL wait, and are required for the zone apex (`example.com`). Pass `evaluateTargetHealth: true` to integrate with Route 53 health checks.
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as aws from "@pulumi/aws";
+
+const zone = new aws.route53.Zone("primary", { name: "example.com" });
+
+// Assume alb is an aws.lb.LoadBalancer resource
+const apexAlias = new aws.route53.Record("apex", {
+    zoneId: zone.zoneId,
+    name: "example.com",   // zone apex — cannot use CNAME here
+    type: aws.route53.RecordType.A,
+    aliases: [{
+        name: alb.dnsName,
+        zoneId: alb.zoneId,
+        evaluateTargetHealth: true,
+    }],
+});
+
+const wwwAlias = new aws.route53.Record("www", {
+    zoneId: zone.zoneId,
+    name: "www.example.com",
+    type: aws.route53.RecordType.A,
+    aliases: [{
+        name: alb.dnsName,
+        zoneId: alb.zoneId,
+        evaluateTargetHealth: true,
+    }],
+});
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+
+zone = aws.route53.Zone("primary", name="example.com")
+
+# Assumes alb is an aws.lb.LoadBalancer resource
+apex_alias = aws.route53.Record("apex",
+    zone_id=zone.zone_id,
+    name="example.com",
+    type=aws.route53.RecordType.A,
+    aliases=[aws.route53.RecordAliasArgs(
+        name=alb.dns_name,
+        zone_id=alb.zone_id,
+        evaluate_target_health=True,
+    )],
+)
+
+www_alias = aws.route53.Record("www",
+    zone_id=zone.zone_id,
+    name="www.example.com",
+    type=aws.route53.RecordType.A,
+    aliases=[aws.route53.RecordAliasArgs(
+        name=alb.dns_name,
+        zone_id=alb.zone_id,
+        evaluate_target_health=True,
+    )],
+)
+
+pulumi.export("zone_id", zone.zone_id)
+```
+
+</CodeGroup>
+
+### Alias record for CloudFront
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+// CloudFront distributions always use hosted zone ID Z2FDTNDATAQYW2
+const cfAlias = new aws.route53.Record("cdn", {
+    zoneId: zone.zoneId,
+    name: "cdn.example.com",
+    type: aws.route53.RecordType.A,
+    aliases: [{
+        name: distribution.domainName,
+        zoneId: "Z2FDTNDATAQYW2",
+        evaluateTargetHealth: false,
+    }],
+});
+```
+
+### MX and TXT records
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const mx = new aws.route53.Record("mx", {
+    zoneId: zone.zoneId,
+    name: "example.com",
+    type: aws.route53.RecordType.MX,
+    ttl: 300,
+    records: [
+        "10 mail1.example.com.",
+        "20 mail2.example.com.",
+    ],
+});
+
+const spf = new aws.route53.Record("spf", {
+    zoneId: zone.zoneId,
+    name: "example.com",
+    type: aws.route53.RecordType.TXT,
+    ttl: 300,
+    records: ["v=spf1 include:_spf.google.com ~all"],
+});
+```
+
+### Weighted routing policy
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const blue = new aws.route53.Record("blue", {
+    zoneId: zone.zoneId,
+    name: "app.example.com",
+    type: aws.route53.RecordType.CNAME,
+    ttl: 60,
+    weightedRoutingPolicies: [{ weight: 90 }],
+    setIdentifier: "blue",
+    records: ["blue.app.example.com"],
+});
+
+const green = new aws.route53.Record("green", {
+    zoneId: zone.zoneId,
+    name: "app.example.com",
+    type: aws.route53.RecordType.CNAME,
+    ttl: 60,
+    weightedRoutingPolicies: [{ weight: 10 }],
+    setIdentifier: "green",
+    records: ["green.app.example.com"],
+});
+```
+
+<Tip>
+  Route 53 alias records are always free to query and respond to DNS changes faster than TTL-based records. Prefer aliases over CNAMEs when pointing to AWS resources that expose a `dnsName` and `zoneId`.
+</Tip>

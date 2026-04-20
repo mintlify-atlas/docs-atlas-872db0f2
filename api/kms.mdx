@@ -1,0 +1,300 @@
+---
+title: "aws.kms — KMS keys, aliases, and key policies"
+description: "Reference for the aws.kms module: create customer-managed KMS keys, set key policies, create aliases, and manage multi-region replica keys."
+---
+
+The `aws.kms` module manages AWS Key Management Service resources: customer-managed keys (CMKs), aliases, grants, and multi-Region replica keys. KMS keys integrate with most AWS services for server-side encryption — S3 buckets, RDS instances, EBS volumes, Secrets Manager, and more.
+
+## aws.kms.Key
+
+`aws.kms.Key` creates a single-Region or multi-Region primary KMS key. By default it creates a symmetric encryption key (`SYMMETRIC_DEFAULT`).
+
+<ParamField path="description" type="string">
+  Human-readable description of the key.
+</ParamField>
+
+<ParamField path="keyUsage" type="string" default='"ENCRYPT_DECRYPT"'>
+  Cryptographic use of the key. Accepted values: `"ENCRYPT_DECRYPT"`, `"SIGN_VERIFY"`, `"GENERATE_VERIFY_MAC"`.
+</ParamField>
+
+<ParamField path="customerMasterKeySpec" type="string" default='"SYMMETRIC_DEFAULT"'>
+  Key material type. `"SYMMETRIC_DEFAULT"` for AES-256-GCM. Asymmetric options include `"RSA_2048"`, `"ECC_NIST_P256"`, etc.
+</ParamField>
+
+<ParamField path="policy" type="string">
+  Key policy JSON. Defaults to the AWS default key policy that grants the root account full access. Use `aws.iam.getPolicyDocument` to generate this, or manage it separately with `aws.kms.KeyPolicy`.
+</ParamField>
+
+<ParamField path="enableKeyRotation" type="boolean" default="false">
+  Enable automatic annual key rotation. Only supported for symmetric keys.
+</ParamField>
+
+<ParamField path="deletionWindowInDays" type="number" default="30">
+  Waiting period (7–30 days) before the key is deleted after `pulumi destroy`. AWS KMS enforces a minimum of 7 days.
+</ParamField>
+
+<ParamField path="multiRegion" type="boolean" default="false">
+  Create a multi-Region primary key. You can then replicate it with `aws.kms.ReplicaKey`.
+</ParamField>
+
+<ParamField path="isEnabled" type="boolean" default="true">
+  Enable or disable the key.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+<Note>
+  KMS key policy and the standalone `aws.kms.KeyPolicy` resource are mutually exclusive. Configuring both causes permanent diffs. Pick one approach and stick with it.
+</Note>
+
+```typescript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const current = await aws.getCallerIdentity({});
+
+const key = new aws.kms.Key("appKey", {
+    description: "Application encryption key",
+    enableKeyRotation: true,
+    deletionWindowInDays: 14,
+    policy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [
+            {
+                Sid: "Enable IAM User Permissions",
+                Effect: "Allow",
+                Principal: { AWS: `arn:aws:iam::${current.accountId}:root` },
+                Action: "kms:*",
+                Resource: "*",
+            },
+        ],
+    }),
+});
+```
+
+---
+
+## aws.kms.Alias
+
+An alias is a friendly name for a KMS key. Aliases must start with `alias/` and cannot start with `alias/aws/` (reserved for AWS-managed keys).
+
+<ParamField path="name" type="string">
+  The alias name, e.g. `"alias/my-app-key"`. Must start with `"alias/"`. If omitted, Pulumi assigns a unique name.
+</ParamField>
+
+<ParamField path="namePrefix" type="string">
+  Creates a unique alias beginning with this prefix. Conflicts with `name`.
+</ParamField>
+
+<ParamField path="targetKeyId" type="string" required>
+  The ID or ARN of the key to associate the alias with.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const key = new aws.kms.Key("appKey", {
+    description: "Application encryption key",
+    enableKeyRotation: true,
+});
+
+const alias = new aws.kms.Alias("appKeyAlias", {
+    name: "alias/my-app-key",
+    targetKeyId: key.keyId,
+});
+```
+
+---
+
+## aws.kms.KeyPolicy
+
+Use `aws.kms.KeyPolicy` as a standalone resource when you want to manage the key policy separately from the key itself. Do not set both `policy` on `aws.kms.Key` and `aws.kms.KeyPolicy` for the same key.
+
+<ParamField path="keyId" type="string" required>
+  The ID of the KMS key.
+</ParamField>
+
+<ParamField path="policy" type="string" required>
+  The key policy JSON.
+</ParamField>
+
+---
+
+## aws.kms.ReplicaKey
+
+Replicates a multi-Region primary key into another region. The primary key must have `multiRegion: true`.
+
+<ParamField path="primaryKeyArn" type="string" required>
+  The ARN of the multi-Region primary key to replicate.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Description for the replica key.
+</ParamField>
+
+<ParamField path="deletionWindowInDays" type="number" default="30">
+  Waiting period (7–30 days) before deletion.
+</ParamField>
+
+<ParamField path="enableKeyRotation" type="boolean" default="false">
+  Enable key rotation on the replica.
+</ParamField>
+
+<ParamField path="policy" type="string">
+  Key policy JSON for the replica. If omitted, the replica inherits the primary's policy.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+// Primary key (e.g. in us-east-1 via the default provider)
+const primary = new aws.kms.Key("primary", {
+    description: "Multi-Region primary key",
+    deletionWindowInDays: 30,
+    multiRegion: true,
+});
+
+// Replica key in us-west-2 — use a region-specific provider
+const usWest2 = new aws.Provider("us-west-2", { region: "us-west-2" });
+
+const replica = new aws.kms.ReplicaKey("replica", {
+    description: "Multi-Region replica key",
+    deletionWindowInDays: 7,
+    primaryKeyArn: primary.arn,
+}, { provider: usWest2 });
+```
+
+---
+
+## aws.kms.Grant
+
+A grant delegates specific KMS operations to a principal without modifying the key policy.
+
+<ParamField path="keyId" type="string" required>
+  The key ID or ARN.
+</ParamField>
+
+<ParamField path="granteePrincipal" type="string" required>
+  ARN of the principal receiving the grant.
+</ParamField>
+
+<ParamField path="operations" type="string[]" required>
+  List of permitted operations. Valid values: `"Decrypt"`, `"Encrypt"`, `"GenerateDataKey"`, `"GenerateDataKeyWithoutPlaintext"`, `"ReEncryptFrom"`, `"ReEncryptTo"`, `"Sign"`, `"Verify"`, `"GetPublicKey"`, `"CreateGrant"`, `"RetireGrant"`, `"DescribeKey"`, `"GenerateDataKeyPair"`, `"GenerateDataKeyPairWithoutPlaintext"`.
+</ParamField>
+
+<ParamField path="name" type="string">
+  Friendly name for the grant.
+</ParamField>
+
+<ParamField path="retireOnDelete" type="boolean" default="false">
+  When `false` (default), the grant is revoked on destroy. Set to `true` to retire instead.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const grant = new aws.kms.Grant("lambdaGrant", {
+    keyId: key.keyId,
+    granteePrincipal: lambdaRole.arn,
+    operations: ["Decrypt", "GenerateDataKey"],
+    name: "lambda-decrypt-grant",
+});
+```
+
+---
+
+## aws.kms.getKey
+
+Look up an existing key by ID, ARN, alias name, or alias ARN.
+
+<ParamField path="keyId" type="string" required>
+  Accepts: key UUID, key ARN, alias name (`"alias/my-key"`), or alias ARN.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+// Look up by alias
+const key = await aws.kms.getKey({ keyId: "alias/my-app-key" });
+
+// Look up by key ID
+const keyById = await aws.kms.getKey({
+    keyId: "1234abcd-12ab-34cd-56ef-1234567890ab",
+});
+```
+
+---
+
+## Using KMS for S3 server-side encryption
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const s3Key = new aws.kms.Key("s3Key", {
+    description: "S3 bucket encryption key",
+    enableKeyRotation: true,
+    deletionWindowInDays: 14,
+});
+
+const s3KeyAlias = new aws.kms.Alias("s3KeyAlias", {
+    name: "alias/s3-bucket-key",
+    targetKeyId: s3Key.keyId,
+});
+
+const bucket = new aws.s3.BucketV2("secureBucket", {
+    bucket: "my-secure-bucket",
+});
+
+const bucketEncryption = new aws.s3.BucketServerSideEncryptionConfigurationV2("bucketEnc", {
+    bucket: bucket.id,
+    rules: [{
+        applyServerSideEncryptionByDefault: {
+            sseAlgorithm: "aws:kms",
+            kmsMasterKeyId: s3Key.arn,
+        },
+        bucketKeyEnabled: true,
+    }],
+});
+```
+
+<Tip>
+  Enable `bucketKeyEnabled: true` to reduce KMS API call costs. S3 uses a bucket-level data key for most operations instead of calling KMS for every object.
+</Tip>
+
+---
+
+## Using KMS for RDS storage encryption
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const rdsKey = new aws.kms.Key("rdsKey", {
+    description: "RDS database encryption key",
+    enableKeyRotation: true,
+    deletionWindowInDays: 14,
+});
+
+const rdsAlias = new aws.kms.Alias("rdsKeyAlias", {
+    name: "alias/rds-db-key",
+    targetKeyId: rdsKey.keyId,
+});
+
+const db = new aws.rds.Instance("app", {
+    engine: "postgres",
+    engineVersion: "15",
+    instanceClass: aws.rds.InstanceType.T3_Micro,
+    allocatedStorage: 20,
+    dbName: "appdb",
+    username: "admin",
+    password: "change-me",
+    storageEncrypted: true,
+    kmsKeyId: rdsKey.arn,
+    skipFinalSnapshot: true,
+});
+```
+
+<Warning>
+  `storageEncrypted` and `kmsKeyId` cannot be changed after the RDS instance is created — they require a snapshot restore or blue-green deployment. Set encryption at creation time.
+</Warning>

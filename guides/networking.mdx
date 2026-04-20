@@ -1,0 +1,281 @@
+---
+title: "Configure AWS networking and VPC with Pulumi"
+description: "Create VPCs, subnets, internet gateways, route tables, security groups, and load balancers using the Pulumi AWS Provider for repeatable networks."
+---
+
+A well-structured VPC is the foundation of every AWS deployment. With the Pulumi AWS Provider you define your entire network topology — VPC, subnets, gateways, route tables, security groups, and load balancers — as code that is reproducible, version-controlled, and composable across stacks.
+
+## Multi-AZ VPC with public and private subnets
+
+The pattern below uses `aws.getAvailabilityZones` to discover all AZs in the current region and creates one public and one private subnet per AZ.
+
+```typescript index.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Discover AZs in the current region
+const azs = aws.getAvailabilityZonesOutput({ state: "available" });
+
+const vpc = new aws.ec2.Vpc("mainVpc", {
+    cidrBlock: "10.0.0.0/16",
+    enableDnsHostnames: true,
+    enableDnsSupport: true,
+    tags: { Name: "main-vpc" },
+});
+
+// Public subnets — one per AZ
+const publicSubnets = azs.names.apply(names =>
+    names.slice(0, 3).map((az, i) =>
+        new aws.ec2.Subnet(`publicSubnet-${i}`, {
+            vpcId: vpc.id,
+            cidrBlock: `10.0.${i}.0/24`,
+            availabilityZone: az,
+            mapPublicIpOnLaunch: true,
+            tags: { Name: `public-${az}`, Tier: "public" },
+        })
+    )
+);
+
+// Private subnets — one per AZ
+const privateSubnets = azs.names.apply(names =>
+    names.slice(0, 3).map((az, i) =>
+        new aws.ec2.Subnet(`privateSubnet-${i}`, {
+            vpcId: vpc.id,
+            cidrBlock: `10.0.${i + 10}.0/24`,
+            availabilityZone: az,
+            mapPublicIpOnLaunch: false,
+            tags: { Name: `private-${az}`, Tier: "private" },
+        })
+    )
+);
+```
+
+## Internet Gateway and NAT Gateway
+
+The Internet Gateway provides bidirectional internet access for public subnets. The NAT Gateway lets private subnet resources make outbound connections without being directly reachable.
+
+```typescript index.ts
+// Internet Gateway for the public subnets
+const igw = new aws.ec2.InternetGateway("igw", {
+    vpcId: vpc.id,
+    tags: { Name: "main-igw" },
+});
+
+// Elastic IP for the NAT Gateway
+const natEip = new aws.ec2.Eip("natEip", {
+    domain: "vpc",
+});
+
+// NAT Gateway lives in a public subnet
+const natGateway = new aws.ec2.NatGateway("natGw", {
+    allocationId: natEip.id,
+    subnetId: publicSubnets.apply(s => s[0].id),
+    tags: { Name: "main-nat" },
+}, { dependsOn: [igw] });
+```
+
+<Note>
+A NAT Gateway incurs hourly charges and data-processing fees. For development environments, consider a NAT instance or no NAT Gateway at all.
+</Note>
+
+## Route tables and associations
+
+Public subnets route `0.0.0.0/0` through the Internet Gateway. Private subnets route through the NAT Gateway.
+
+```typescript index.ts
+// Public route table
+const publicRt = new aws.ec2.RouteTable("publicRt", {
+    vpcId: vpc.id,
+    routes: [{
+        cidrBlock: "0.0.0.0/0",
+        gatewayId: igw.id,
+    }],
+    tags: { Name: "public-rt" },
+});
+
+// Associate each public subnet with the public route table
+publicSubnets.apply(subnets =>
+    subnets.map((subnet, i) =>
+        new aws.ec2.RouteTableAssociation(`publicRtAssoc-${i}`, {
+            subnetId: subnet.id,
+            routeTableId: publicRt.id,
+        })
+    )
+);
+
+// Private route table — outbound via NAT Gateway
+const privateRt = new aws.ec2.RouteTable("privateRt", {
+    vpcId: vpc.id,
+    routes: [{
+        cidrBlock: "0.0.0.0/0",
+        natGatewayId: natGateway.id,
+    }],
+    tags: { Name: "private-rt" },
+});
+
+privateSubnets.apply(subnets =>
+    subnets.map((subnet, i) =>
+        new aws.ec2.RouteTableAssociation(`privateRtAssoc-${i}`, {
+            subnetId: subnet.id,
+            routeTableId: privateRt.id,
+        })
+    )
+);
+```
+
+## Security groups with ingress and egress rules
+
+Security groups are the primary traffic filter for EC2 instances, Lambda functions in VPCs, and ECS tasks.
+
+```typescript index.ts
+// Web-tier security group: allow HTTP/HTTPS from anywhere, all egress
+const webSg = new aws.ec2.SecurityGroup("webSg", {
+    vpcId: vpc.id,
+    description: "Allow HTTP and HTTPS from internet",
+    ingress: [
+        {
+            protocol: aws.ec2.ProtocolType.TCP,
+            fromPort: 80,
+            toPort: 80,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "HTTP",
+        },
+        {
+            protocol: aws.ec2.ProtocolType.TCP,
+            fromPort: 443,
+            toPort: 443,
+            cidrBlocks: ["0.0.0.0/0"],
+            description: "HTTPS",
+        },
+    ],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "All outbound",
+    }],
+    tags: { Name: "web-sg" },
+});
+
+// App-tier security group: only accept traffic from the web tier
+const appSg = new aws.ec2.SecurityGroup("appSg", {
+    vpcId: vpc.id,
+    description: "Accept traffic from the web tier only",
+    ingress: [{
+        protocol: aws.ec2.ProtocolType.TCP,
+        fromPort: 8080,
+        toPort: 8080,
+        securityGroups: [webSg.id],
+        description: "From web tier",
+    }],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+    }],
+    tags: { Name: "app-sg" },
+});
+```
+
+<Tip>
+Reference other security group IDs in the `securityGroups` field instead of CIDR blocks where possible. This makes rules self-documenting and avoids accidental access if IP ranges change.
+</Tip>
+
+## Application Load Balancer
+
+An ALB fronts your fleet of instances or containers and handles health-checking, connection draining, and path-based routing.
+
+```typescript index.ts
+// ALB in public subnets
+const alb = new aws.lb.LoadBalancer("appAlb", {
+    internal: false,
+    loadBalancerType: "application",
+    securityGroups: [webSg.id],
+    subnets: publicSubnets.apply(s => s.map(s => s.id)),
+    enableDeletionProtection: false,
+    tags: { Name: "app-alb" },
+});
+
+// Target group for the app tier
+const targetGroup = new aws.lb.TargetGroup("appTg", {
+    port: 8080,
+    protocol: "HTTP",
+    targetType: "instance",
+    vpcId: vpc.id,
+    healthCheck: {
+        enabled: true,
+        path: "/health",
+        protocol: "HTTP",
+        interval: 30,
+        timeout: 5,
+        healthyThreshold: 2,
+        unhealthyThreshold: 3,
+        matcher: "200",
+    },
+    tags: { Name: "app-tg" },
+});
+
+// HTTP listener — forward everything to the target group
+const httpListener = new aws.lb.Listener("httpListener", {
+    loadBalancerArn: alb.arn,
+    port: 80,
+    protocol: "HTTP",
+    defaultActions: [{
+        type: "forward",
+        targetGroupArn: targetGroup.arn,
+    }],
+});
+
+export const albDnsName = alb.dnsName;
+export const vpcId = vpc.id;
+```
+
+## Full webserver example pattern
+
+The following pattern, drawn from the provider's example programs, shows a minimal but complete stack: default VPC, security group allowing HTTP, and an EC2 instance wired to the group.
+
+```typescript index.ts
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+const vpc = new aws.ec2.DefaultVpc("defaultVpc", {
+    tags: { Name: "Default VPC" },
+});
+
+const subnet = new aws.ec2.DefaultSubnet("defaultSubnet", {
+    availabilityZone: "us-east-1a",
+    tags: { Name: "Default subnet for us-east-1a" },
+});
+
+const securityGroup = new aws.ec2.SecurityGroup("webSecGrp", {
+    vpcId: vpc.id,
+    description: "Enable HTTP access",
+    ingress: [{
+        protocol: aws.ec2.ProtocolType.TCP,
+        fromPort: 80,
+        toPort: 80,
+        cidrBlocks: ["0.0.0.0/0"],
+    }],
+});
+
+const server = new aws.ec2.Instance("webServer", {
+    instanceType: aws.ec2.InstanceType.T2_Micro,
+    vpcSecurityGroupIds: [securityGroup.id],
+    ami: "ami-0c55b159cbfafe1f0",   // replace with a valid AMI for your region
+    subnetId: subnet.id,
+});
+
+export const publicIp  = server.publicIp;
+export const publicDns = server.publicDns;
+```
+
+<CardGroup cols={2}>
+  <Card title="VPC API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/ec2/vpc/">
+    Full resource documentation for `aws.ec2.Vpc` and related resources.
+  </Card>
+  <Card title="Load Balancer API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/lb/">
+    Full resource documentation for `aws.lb.*`.
+  </Card>
+</CardGroup>

@@ -1,0 +1,352 @@
+---
+title: "Run containers on AWS ECS and EKS with Pulumi"
+description: "Deploy containerized workloads using ECS Fargate or Amazon EKS with the Pulumi AWS Provider — from task definitions to full clusters."
+---
+
+The Pulumi AWS Provider covers the full container deployment lifecycle: push images to ECR, define task definitions for ECS Fargate, create managed node groups for EKS, and front everything with an Application Load Balancer. This guide shows how each piece fits together with real TypeScript examples.
+
+## ECR: create a repository and push images
+
+Amazon Elastic Container Registry (ECR) hosts your Docker images. Create the repository, set a lifecycle policy to manage storage costs, and push images using the `@pulumi/docker-build` package.
+
+<Steps>
+  <Step title="Create an ECR repository">
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const repository = new aws.ecr.Repository("myrepository", {
+        forceDelete: true,   // allow pulumi destroy to remove non-empty repos
+    });
+
+    // Repository access policy
+    const repositoryPolicy = new aws.ecr.RepositoryPolicy("myrepositorypolicy", {
+        repository: repository.id,
+        policy: {
+            Version: "2012-10-17",
+            Statement: [{
+                Sid: "AllowPull",
+                Effect: "Allow",
+                Principal: "*",
+                Action: [
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:PutImage",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:UploadLayerPart",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:DescribeRepositories",
+                    "ecr:GetRepositoryPolicy",
+                    "ecr:ListImages",
+                    "ecr:DeleteRepository",
+                    "ecr:BatchDeleteImage",
+                    "ecr:SetRepositoryPolicy",
+                    "ecr:DeleteRepositoryPolicy",
+                ],
+            }],
+        },
+    });
+
+    // Expire untagged images after 14 days
+    const lifecyclePolicy = new aws.ecr.LifecyclePolicy("mylifecyclepolicy", {
+        repository: repository.id,
+        policy: {
+            rules: [{
+                rulePriority: 1,
+                description: "Expire untagged images older than 14 days",
+                selection: {
+                    tagStatus: "untagged",
+                    countType: "sinceImagePushed",
+                    countUnit: "days",
+                    countNumber: 14,
+                },
+                action: { type: "expire" },
+            }],
+        },
+    });
+
+    export const repositoryUrl = repository.repositoryUrl;
+    ```
+
+  </Step>
+
+  <Step title="Build and push a Docker image">
+
+    Use `aws.ecr.getAuthorizationTokenOutput` to fetch registry credentials at deploy time, then pass them to `@pulumi/docker-build`.
+
+    ```typescript index.ts
+    import * as pulumi from "@pulumi/pulumi";
+    import * as aws from "@pulumi/aws";
+    import * as docker from "@pulumi/docker-build";
+
+    const repository = new aws.ecr.Repository("myrepository", {
+        forceDelete: true,
+    });
+
+    // Fetch ECR credentials dynamically
+    const credentials = aws.ecr.getAuthorizationTokenOutput({
+        registryId: repository.registryId,
+    });
+
+    const image = new docker.Image("myimage", {
+        push: true,
+        tags: [pulumi.interpolate`${repository.repositoryUrl}:latest`],
+        context: {
+            location: "./app",    // path to directory with Dockerfile
+        },
+        registries: [{
+            address:  credentials.proxyEndpoint,
+            username: credentials.userName,
+            password: credentials.password,
+        }],
+    });
+
+    export const digest = image.digest;
+    ```
+
+    <Note>
+    `getAuthorizationTokenOutput` returns a token valid for 12 hours. Pulumi re-evaluates it on every `pulumi up`, so credentials stay fresh.
+    </Note>
+
+  </Step>
+</Steps>
+
+## ECS: cluster, task definition, and Fargate service
+
+Fargate removes the need to manage EC2 instances. You define the CPU/memory shape, provide the container definition JSON, and ECS places the task.
+
+<Steps>
+  <Step title="Create an ECS cluster">
+
+    ```typescript index.ts
+    import * as aws from "@pulumi/aws";
+
+    const cluster = new aws.ecs.Cluster("appCluster", {
+        settings: [{
+            name: "containerInsights",
+            value: "enabled",
+        }],
+    });
+    ```
+
+  </Step>
+
+  <Step title="Define the task execution role">
+
+    ECS needs a role to pull images from ECR and write logs to CloudWatch.
+
+    ```typescript index.ts
+    const executionRole = new aws.iam.Role("ecsExecutionRole", {
+        assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+            Service: "ecs-tasks.amazonaws.com",
+        }),
+    });
+
+    new aws.iam.RolePolicyAttachment("ecsExecutionRolePolicy", {
+        role: executionRole.name,
+        policyArn: aws.iam.ManagedPolicy.AmazonECSTaskExecutionRolePolicy,
+    });
+    ```
+
+  </Step>
+
+  <Step title="Create a task definition">
+
+    The container definitions JSON describes which image to run, port mappings, and environment variables.
+
+    ```typescript index.ts
+    import * as pulumi from "@pulumi/pulumi";
+
+    const taskDefinition = new aws.ecs.TaskDefinition("appTask", {
+        family: "app-task",
+        cpu: "256",
+        memory: "512",
+        networkMode: "awsvpc",
+        requiresCompatibilities: ["FARGATE"],
+        executionRoleArn: executionRole.arn,
+        containerDefinitions: pulumi.jsonStringify([{
+            name: "app",
+            image: pulumi.interpolate`${repository.repositoryUrl}:latest`,
+            portMappings: [{
+                containerPort: 8080,
+                protocol: "tcp",
+            }],
+            logConfiguration: {
+                logDriver: "awslogs",
+                options: {
+                    "awslogs-group":         "/ecs/app-task",
+                    "awslogs-region":        "us-east-1",
+                    "awslogs-stream-prefix": "ecs",
+                },
+            },
+            environment: [
+                { name: "STAGE", value: "production" },
+            ],
+        }]),
+    });
+    ```
+
+  </Step>
+
+  <Step title="Create an ECS Fargate service">
+
+    ```typescript index.ts
+    const service = new aws.ecs.Service("appService", {
+        cluster: cluster.arn,
+        taskDefinition: taskDefinition.arn,
+        desiredCount: 2,
+        launchType: "FARGATE",
+        networkConfiguration: {
+            subnets: privateSubnetIds,          // your private subnet IDs
+            securityGroups: [serviceSecurityGroup.id],
+            assignPublicIp: false,
+        },
+        loadBalancers: [{
+            targetGroupArn: targetGroup.arn,
+            containerName: "app",
+            containerPort: 8080,
+        }],
+    });
+    ```
+
+  </Step>
+</Steps>
+
+## Application Load Balancer in front of ECS
+
+An ALB distributes traffic across your Fargate tasks and handles TLS termination.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// Security group for the ALB — allow inbound HTTP
+const albSecurityGroup = new aws.ec2.SecurityGroup("albSg", {
+    vpcId: vpc.id,
+    ingress: [{
+        protocol: "tcp",
+        fromPort: 80,
+        toPort: 80,
+        cidrBlocks: ["0.0.0.0/0"],
+    }],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+    }],
+});
+
+const alb = new aws.lb.LoadBalancer("appAlb", {
+    internal: false,
+    loadBalancerType: "application",
+    securityGroups: [albSecurityGroup.id],
+    subnets: publicSubnetIds,
+});
+
+const targetGroup = new aws.lb.TargetGroup("appTg", {
+    port: 8080,
+    protocol: "HTTP",
+    targetType: "ip",       // required for Fargate awsvpc networking
+    vpcId: vpc.id,
+    healthCheck: {
+        path: "/health",
+        interval: 30,
+        healthyThreshold: 2,
+        unhealthyThreshold: 3,
+    },
+});
+
+const listener = new aws.lb.Listener("appListener", {
+    loadBalancerArn: alb.arn,
+    port: 80,
+    protocol: "HTTP",
+    defaultActions: [{
+        type: "forward",
+        targetGroupArn: targetGroup.arn,
+    }],
+});
+
+export const albDnsName = alb.dnsName;
+```
+
+## EKS cluster with a managed node group
+
+`aws.eks.Cluster` creates the Kubernetes control plane. Add a managed node group so EKS handles EC2 lifecycle for you.
+
+```typescript index.ts
+import * as aws from "@pulumi/aws";
+
+// IAM role for the EKS control plane
+const eksRole = new aws.iam.Role("eksRole", {
+    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+        Service: "eks.amazonaws.com",
+    }),
+});
+
+new aws.iam.RolePolicyAttachment("eksClusterPolicy", {
+    role: eksRole.name,
+    policyArn: aws.iam.ManagedPolicy.AmazonEKSClusterPolicy,
+});
+
+// IAM role for node group EC2 instances
+const nodeRole = new aws.iam.Role("nodeRole", {
+    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+        Service: "ec2.amazonaws.com",
+    }),
+});
+
+for (const policy of [
+    aws.iam.ManagedPolicy.AmazonEKSWorkerNodePolicy,
+    aws.iam.ManagedPolicy.AmazonEKS_CNI_Policy,
+    aws.iam.ManagedPolicy.AmazonEC2ContainerRegistryReadOnly,
+]) {
+    new aws.iam.RolePolicyAttachment(`nodePolicy-${policy.split("/").pop()}`, {
+        role: nodeRole.name,
+        policyArn: policy,
+    });
+}
+
+// EKS cluster
+const cluster = new aws.eks.Cluster("appCluster", {
+    roleArn: eksRole.arn,
+    vpcConfig: {
+        subnetIds: [...publicSubnetIds, ...privateSubnetIds],
+        endpointPublicAccess: true,
+        endpointPrivateAccess: false,
+    },
+    version: "1.31",
+});
+
+// Managed node group
+const nodeGroup = new aws.eks.NodeGroup("appNodeGroup", {
+    clusterName: cluster.name,
+    nodeRoleArn: nodeRole.arn,
+    subnetIds: privateSubnetIds,
+    instanceTypes: ["t3.medium"],
+    scalingConfig: {
+        desiredSize: 2,
+        minSize: 1,
+        maxSize: 4,
+    },
+    updateConfig: {
+        maxUnavailable: 1,
+    },
+});
+
+export const kubeconfig = cluster.endpoint;
+export const clusterName = cluster.name;
+```
+
+<Warning>
+EKS cluster creation typically takes 10–15 minutes. Avoid cancelling `pulumi up` mid-deployment as the control plane may be left in a partial state.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="ECS API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/ecs/">
+    Full resource documentation for `aws.ecs.*`.
+  </Card>
+  <Card title="EKS API reference" icon="book" href="https://www.pulumi.com/registry/packages/aws/api-docs/eks/">
+    Full resource documentation for `aws.eks.*`.
+  </Card>
+</CardGroup>

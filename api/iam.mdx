@@ -1,0 +1,415 @@
+---
+title: "aws.iam — IAM roles, policies, and identity management"
+description: "Reference for the aws.iam module: create roles with trust policies, attach managed and inline policies, and use getPolicyDocument for type-safe JSON."
+---
+
+The `aws.iam` module manages AWS Identity and Access Management identities — roles, users, groups, policies, instance profiles, and OIDC providers. Use `aws.iam.getPolicyDocument` as the recommended way to construct policy JSON: it validates your input at the Pulumi type level and produces consistent, minified output.
+
+## aws.iam.Role
+
+An IAM role is an identity that can be assumed by AWS services, other accounts, or federated users. The `assumeRolePolicy` field is the trust policy — a JSON string that controls **who** may assume the role.
+
+<ParamField path="name" type="string">
+  Name of the role. If omitted, Pulumi assigns a unique name. The name is immutable; changing it forces replacement.
+</ParamField>
+
+<ParamField path="assumeRolePolicy" type="string" required>
+  Trust policy JSON string. Use `aws.iam.getPolicyDocument` to generate this.
+</ParamField>
+
+<ParamField path="path" type="string" default='"/"'>
+  Hierarchical path for organizing roles (e.g. `"/system/"`).
+</ParamField>
+
+<ParamField path="maxSessionDuration" type="number" default="3600">
+  Maximum session duration in seconds. Range: 3600–43200.
+</ParamField>
+
+<ParamField path="permissionsBoundary" type="string">
+  ARN of a managed policy to use as a permissions boundary.
+</ParamField>
+
+<ParamField path="tags" type="object">
+  Key-value map of resource tags.
+</ParamField>
+
+---
+
+## aws.iam.getPolicyDocument
+
+`getPolicyDocument` is a data source (not a resource) that generates IAM policy JSON from a structured TypeScript/Python object. The returned `.json` string is ready to pass to `assumeRolePolicy`, `aws.iam.Policy`, `aws.kms.Key`, etc.
+
+<ParamField path="statements" type="GetPolicyDocumentStatement[]" required>
+  List of policy statements.
+</ParamField>
+
+<ParamField path="statements[].sid" type="string">
+  Optional statement identifier.
+</ParamField>
+
+<ParamField path="statements[].effect" type="string" default='"Allow"'>
+  `"Allow"` or `"Deny"`.
+</ParamField>
+
+<ParamField path="statements[].actions" type="string[]">
+  IAM actions, e.g. `["s3:GetObject", "s3:PutObject"]`.
+</ParamField>
+
+<ParamField path="statements[].notActions" type="string[]">
+  Inverted action list. Mutually exclusive with `actions`.
+</ParamField>
+
+<ParamField path="statements[].resources" type="string[]">
+  Resource ARNs the statement applies to.
+</ParamField>
+
+<ParamField path="statements[].principals" type="GetPolicyDocumentStatementPrincipal[]">
+  Principals (for trust policies). Each entry has `type` (`"Service"`, `"AWS"`, `"Federated"`) and `identifiers` (list of ARNs or service names).
+</ParamField>
+
+<ParamField path="statements[].conditions" type="GetPolicyDocumentStatementCondition[]">
+  Conditions. Each entry has `test` (e.g. `"StringEquals"`), `variable` (e.g. `"aws:RequestedRegion"`), and `values`.
+</ParamField>
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const lambdaTrustPolicy = aws.iam.getPolicyDocument({
+    statements: [{
+        effect: "Allow",
+        principals: [{
+            type: "Service",
+            identifiers: ["lambda.amazonaws.com"],
+        }],
+        actions: ["sts:AssumeRole"],
+    }],
+});
+```
+
+---
+
+## aws.iam.Policy
+
+A managed IAM policy that can be attached to multiple identities.
+
+<ParamField path="name" type="string">
+  Policy name. If omitted, Pulumi assigns a unique name.
+</ParamField>
+
+<ParamField path="policy" type="string" required>
+  Policy JSON. Use `aws.iam.getPolicyDocument` or `JSON.stringify`.
+</ParamField>
+
+<ParamField path="description" type="string">
+  Human-readable description.
+</ParamField>
+
+<ParamField path="path" type="string" default='"/"'>
+  Policy path for organizing in the IAM namespace.
+</ParamField>
+
+---
+
+## aws.iam.RolePolicyAttachment
+
+Attaches a managed policy (AWS-managed or customer-managed) to a role by ARN.
+
+<ParamField path="role" type="string" required>
+  The role name (not ARN). Reference `role.name`, not `role.id` or `role.arn`.
+</ParamField>
+
+<ParamField path="policyArn" type="string" required>
+  ARN of the policy to attach. Use `aws.iam.ManagedPolicy` enum for AWS-managed policies.
+</ParamField>
+
+<Note>
+  `RolePolicyAttachment` is the recommended resource for attaching policies. Do not mix it with `aws.iam.PolicyAttachment` or the `managedPolicyArns` argument on `aws.iam.Role` for the same role — they conflict.
+</Note>
+
+---
+
+## aws.iam.ManagedPolicy enum
+
+The `aws.iam.ManagedPolicy` enum provides type-safe references to AWS-managed policy ARNs. Common values:
+
+| Enum key | Policy ARN |
+|---|---|
+| `ManagedPolicy.AdministratorAccess` | `arn:aws:iam::aws:policy/AdministratorAccess` |
+| `ManagedPolicy.AmazonS3FullAccess` | `arn:aws:iam::aws:policy/AmazonS3FullAccess` |
+| `ManagedPolicy.AWSLambdaBasicExecutionRole` | `arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole` |
+| `ManagedPolicy.AWSLambdaExecute` | `arn:aws:iam::aws:policy/AWSLambdaExecute` |
+| `ManagedPolicy.AWSLambdaDynamoDBExecutionRole` | `arn:aws:iam::aws:policy/service-role/AWSLambdaDynamoDBExecutionRole` |
+| `ManagedPolicy.AWSLambdaENIManagementAccess` | `arn:aws:iam::aws:policy/service-role/AWSLambdaENIManagementAccess` |
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const attach = new aws.iam.RolePolicyAttachment("basic", {
+    role: lambdaRole.name,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+});
+```
+
+---
+
+## aws.iam.InstanceProfile
+
+An instance profile is a container that passes an IAM role to an EC2 instance.
+
+<ParamField path="name" type="string">
+  Name of the instance profile. Must be unique within the account regardless of path or role.
+</ParamField>
+
+<ParamField path="role" type="string">
+  The role name to include in the profile. Reference `role.name`.
+</ParamField>
+
+---
+
+## aws.iam.OpenIdConnectProvider
+
+Register an OIDC identity provider (e.g. GitHub Actions, EKS) for IAM Roles for Service Accounts (IRSA) or federated access.
+
+<ParamField path="url" type="string" required>
+  The OIDC provider URL (must start with `https://`).
+</ParamField>
+
+<ParamField path="clientIdLists" type="string[]" required>
+  List of client IDs (audiences) for the OIDC provider.
+</ParamField>
+
+<ParamField path="thumbprintLists" type="string[]">
+  List of server certificate thumbprints. For well-known providers (GitHub, Google, Auth0), AWS uses its own trusted CA store and the thumbprint is not used for verification even if provided.
+</ParamField>
+
+---
+
+## aws.iam.User and aws.iam.AccessKey
+
+Use IAM users and access keys for programmatic access from systems that cannot assume roles. Prefer roles over long-lived access keys where possible.
+
+<ParamField path="name" type="string" required>
+  The user name.
+</ParamField>
+
+<ParamField path="path" type="string" default='"/"'>
+  Hierarchical path (e.g. `"/system/"`).
+</ParamField>
+
+<ParamField path="forceDestroy" type="boolean" default="false">
+  Allow deletion of the user even when they have non-Pulumi-managed access keys, login profiles, or MFA devices.
+</ParamField>
+
+For `aws.iam.AccessKey`:
+
+<ParamField path="user" type="string" required>
+  The user name to create the key for. Reference `user.name`.
+</ParamField>
+
+<ParamField path="pgpKey" type="string">
+  PGP key (base64) or Keybase username (`"keybase:username"`) to encrypt the secret. Recommended whenever the secret is stored in state.
+</ParamField>
+
+<Warning>
+  Access key secrets are stored in Pulumi state. Use the `pgpKey` field to encrypt them, or rotate keys using the `aws.iam.AccessKey` resource lifecycle rather than sharing plain secrets.
+</Warning>
+
+---
+
+## aws.iam.Group and aws.iam.GroupPolicy
+
+Group users to assign policies to many users at once.
+
+<ParamField path="name" type="string" required>
+  Group name.
+</ParamField>
+
+`aws.iam.GroupPolicy` attaches an inline policy to a group:
+
+<ParamField path="group" type="string" required>
+  The group name.
+</ParamField>
+
+<ParamField path="policy" type="string" required>
+  Inline policy JSON.
+</ParamField>
+
+---
+
+## Complete example: Lambda execution role
+
+<CodeGroup>
+
+```typescript TypeScript
+import * as pulumi from "@pulumi/pulumi";
+import * as aws from "@pulumi/aws";
+
+// Trust policy: allow Lambda to assume this role
+const assumeRole = aws.iam.getPolicyDocument({
+    statements: [{
+        effect: "Allow",
+        principals: [{
+            type: "Service",
+            identifiers: ["lambda.amazonaws.com"],
+        }],
+        actions: ["sts:AssumeRole"],
+    }],
+});
+
+// Role
+const lambdaRole = new aws.iam.Role("lambdaRole", {
+    name: "lambda-execution-role",
+    assumeRolePolicy: assumeRole.then(d => d.json),
+    tags: { ManagedBy: "pulumi" },
+});
+
+// Attach the AWS-managed basic execution policy (CloudWatch Logs access)
+const basicExecAttach = new aws.iam.RolePolicyAttachment("basicExec", {
+    role: lambdaRole.name,
+    policyArn: aws.iam.ManagedPolicy.AWSLambdaBasicExecutionRole,
+});
+
+// Attach a custom policy for S3 access
+const s3Policy = aws.iam.getPolicyDocument({
+    statements: [{
+        effect: "Allow",
+        actions: ["s3:GetObject", "s3:PutObject"],
+        resources: ["arn:aws:s3:::my-app-bucket/*"],
+    }],
+});
+
+const s3ManagedPolicy = new aws.iam.Policy("s3Access", {
+    name: "lambda-s3-access",
+    policy: s3Policy.then(d => d.json),
+});
+
+const s3Attach = new aws.iam.RolePolicyAttachment("s3Attach", {
+    role: lambdaRole.name,
+    policyArn: s3ManagedPolicy.arn,
+});
+
+export const roleArn = lambdaRole.arn;
+```
+
+```python Python
+import pulumi
+import pulumi_aws as aws
+import json
+
+# Trust policy
+assume_role = aws.iam.get_policy_document(statements=[
+    aws.iam.GetPolicyDocumentStatementArgs(
+        effect="Allow",
+        principals=[aws.iam.GetPolicyDocumentStatementPrincipalArgs(
+            type="Service",
+            identifiers=["lambda.amazonaws.com"],
+        )],
+        actions=["sts:AssumeRole"],
+    )
+])
+
+# Role
+lambda_role = aws.iam.Role("lambdaRole",
+    name="lambda-execution-role",
+    assume_role_policy=assume_role.json,
+    tags={"ManagedBy": "pulumi"},
+)
+
+# Attach AWS-managed basic execution policy
+basic_exec_attach = aws.iam.RolePolicyAttachment("basicExec",
+    role=lambda_role.name,
+    policy_arn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+)
+
+# Custom S3 policy
+s3_policy_doc = aws.iam.get_policy_document(statements=[
+    aws.iam.GetPolicyDocumentStatementArgs(
+        effect="Allow",
+        actions=["s3:GetObject", "s3:PutObject"],
+        resources=["arn:aws:s3:::my-app-bucket/*"],
+    )
+])
+
+s3_policy = aws.iam.Policy("s3Access",
+    name="lambda-s3-access",
+    policy=s3_policy_doc.json,
+)
+
+s3_attach = aws.iam.RolePolicyAttachment("s3Attach",
+    role=lambda_role.name,
+    policy_arn=s3_policy.arn,
+)
+
+pulumi.export("role_arn", lambda_role.arn)
+```
+
+</CodeGroup>
+
+---
+
+## EC2 instance profile example
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+const assumeRole = aws.iam.getPolicyDocument({
+    statements: [{
+        effect: "Allow",
+        principals: [{ type: "Service", identifiers: ["ec2.amazonaws.com"] }],
+        actions: ["sts:AssumeRole"],
+    }],
+});
+
+const ec2Role = new aws.iam.Role("ec2Role", {
+    name: "ec2-instance-role",
+    assumeRolePolicy: assumeRole.then(d => d.json),
+});
+
+const ssmAttach = new aws.iam.RolePolicyAttachment("ssm", {
+    role: ec2Role.name,
+    policyArn: "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+});
+
+const instanceProfile = new aws.iam.InstanceProfile("ec2Profile", {
+    name: "ec2-instance-profile",
+    role: ec2Role.name,
+});
+
+export const profileArn = instanceProfile.arn;
+```
+
+---
+
+## OIDC provider for GitHub Actions (IRSA pattern)
+
+```typescript
+import * as aws from "@pulumi/aws";
+
+// Register GitHub Actions as an OIDC provider
+const githubOidc = new aws.iam.OpenIdConnectProvider("github", {
+    url: "https://token.actions.githubusercontent.com",
+    clientIdLists: ["sts.amazonaws.com"],
+    // GitHub is a well-known provider; AWS uses its own CA trust store
+    thumbprintLists: ["6938fd4d98bab03faadb97b34396831e3780aea1"],
+});
+
+// Role that GitHub Actions can assume for a specific repo
+const deployRole = new aws.iam.Role("githubDeploy", {
+    name: "github-actions-deploy",
+    assumeRolePolicy: aws.iam.getPolicyDocument({
+        statements: [{
+            effect: "Allow",
+            principals: [{
+                type: "Federated",
+                identifiers: [githubOidc.arn],
+            }],
+            actions: ["sts:AssumeRoleWithWebIdentity"],
+            conditions: [{
+                test: "StringLike",
+                variable: "token.actions.githubusercontent.com:sub",
+                values: ["repo:my-org/my-repo:*"],
+            }],
+        }],
+    }).then(d => d.json),
+});
+```

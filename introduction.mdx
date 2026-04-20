@@ -1,0 +1,115 @@
+---
+title: "Pulumi AWS Provider: multi-language IaC for AWS"
+description: "The Pulumi AWS Provider gives you type-safe access to the full AWS service catalog in TypeScript, Python, Go, .NET, Java, and YAML."
+---
+
+The Pulumi AWS Provider bridges the Terraform AWS provider to Pulumi's SDK surface, giving you type-safe, idiomatic access to every AWS service from the language you already use. Whether you're writing TypeScript, Python, Go, .NET, Java, or YAML, you get the same full AWS service catalog with native language constructs, first-class IDE support, and seamless integration with the rest of the Pulumi ecosystem.
+
+## What the provider does
+
+The AWS provider wraps the upstream Terraform AWS provider and re-exposes all of its resources and data sources as Pulumi SDKs. At runtime, Pulumi translates your program's resource declarations into AWS API calls using the AWS SDK — your credentials never leave your machine or CI environment.
+
+The provider covers the full breadth of AWS services. The Node.js SDK alone ships more than 200 service modules, including `ec2`, `s3`, `lambda`, `iam`, `rds`, `eks`, `ecs`, `cloudwatch`, `route53`, `kms`, `sqs`, `sns`, `dynamodb`, `apigateway`, `apigatewayv2`, `cloudfront`, `cognito`, `glue`, `kinesis`, `sagemaker`, `bedrock`, and many more.
+
+## Key capabilities
+
+**Full AWS service coverage** — every resource available in the Terraform AWS provider is available in all six Pulumi languages.
+
+**Enhanced region support (v7)** — pass a `region` property directly on individual resources instead of creating a separate provider per region. This simplifies multi-region deployments significantly.
+
+**Serverless callbacks** — in TypeScript/JavaScript, you can write Lambda function logic inline as ordinary arrow functions. The provider serializes your closure and creates the Lambda automatically.
+
+**Default tags** — configure `defaultTags` on the provider once and every resource it manages inherits those tags without repeating them on each resource definition.
+
+**Pulumi ESC integration** — use Pulumi Environments, Secrets, and Configuration (ESC) to generate short-lived AWS credentials dynamically via OIDC. No static access keys needed in CI or on developer machines.
+
+## How it fits in the Pulumi ecosystem
+
+The AWS provider is one layer in the Pulumi stack:
+
+- **Pulumi CLI** — orchestrates deployments, manages state, and talks to the provider binary.
+- **Pulumi Cloud / self-managed backends** — store stack state and encrypted secrets.
+- **This provider** — translates Pulumi resource declarations into AWS API calls.
+- **Higher-level components** — [Amazon EKS component](https://www.pulumi.com/registry/packages/eks) and [Crosswalk for AWS](https://www.pulumi.com/docs/guides/crosswalk/aws) build on top of this provider and offer simpler, opinionated APIs for EKS, ECS, VPC, IAM, and more.
+
+## Available languages
+
+<CardGroup cols={3}>
+  <Card title="TypeScript / JavaScript" icon="node-js" href="https://www.npmjs.com/package/@pulumi/aws">
+    `npm install @pulumi/aws`
+  </Card>
+  <Card title="Python" icon="python" href="https://pypi.org/project/pulumi-aws/">
+    `pip install pulumi-aws`
+  </Card>
+  <Card title="Go" icon="golang" href="https://pkg.go.dev/github.com/pulumi/pulumi-aws/sdk/v7/go/aws">
+    `go get github.com/pulumi/pulumi-aws/sdk/v7`
+  </Card>
+  <Card title=".NET" icon="microsoft" href="https://www.nuget.org/packages/Pulumi.Aws">
+    `dotnet add package Pulumi.Aws`
+  </Card>
+  <Card title="Java" icon="java" href="https://search.maven.org/search?q=com.pulumi.aws">
+    Add `com.pulumi:aws` via Maven or Gradle
+  </Card>
+  <Card title="YAML" icon="file-code">
+    Use `aws:s3:Bucket` and other types directly in `Pulumi.yaml`
+  </Card>
+</CardGroup>
+
+### Install commands
+
+<CodeGroup>
+
+```bash TypeScript / JavaScript
+npm install @pulumi/aws
+# or
+yarn add @pulumi/aws
+```
+
+```bash Python
+pip install pulumi-aws
+```
+
+```bash Go
+go get github.com/pulumi/pulumi-aws/sdk/v7/go/aws
+```
+
+```bash .NET
+dotnet add package Pulumi.Aws
+```
+
+```xml Java (Maven)
+<dependency>
+  <groupId>com.pulumi</groupId>
+  <artifactId>aws</artifactId>
+  <version>LATEST</version>
+</dependency>
+```
+
+</CodeGroup>
+
+## Selected service modules
+
+The SDK ships modules for every major AWS service area. A non-exhaustive selection:
+
+| Category | Modules |
+|---|---|
+| Compute | `ec2`, `ecs`, `eks`, `lambda`, `batch`, `apprunner` |
+| Storage | `s3`, `s3control`, `ebs`, `efs`, `fsx`, `glacier` |
+| Database | `rds`, `dynamodb`, `elasticache`, `redshift`, `docdb`, `dax` |
+| Networking | `vpc`, `route53`, `cloudfront`, `lb`, `alb`, `directconnect` |
+| Security | `iam`, `kms`, `secretsmanager`, `acm`, `guardduty`, `wafv2` |
+| Observability | `cloudwatch`, `cloudtrail`, `xray`, `oam` |
+| AI / ML | `bedrock`, `sagemaker`, `rekognition`, `comprehend`, `polly` |
+| Messaging | `sqs`, `sns`, `kinesis`, `mq`, `eventbus` |
+| Developer tools | `codecommit`, `codebuild`, `codepipeline`, `codedeploy` |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Create a Pulumi project, write your first resource, and run `pulumi up` in under 5 minutes.
+  </Card>
+  <Card title="Installation and configuration" icon="gear" href="/installation-configuration">
+    Install the SDK for your language and configure AWS credentials.
+  </Card>
+</CardGroup>
